@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.venv/
+env/
+ENV/
+.env/
+*.env
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+.venv
+.pytest_cache/
+.coverage
+htmlcov/
+nosetests.xml
+coverage.xml
+
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp # Vim swap files
+
+.DS_Store
+Thumbs.dbcircuit_benchmarks/
+
+# Large QASM files that exceed GitHub's 100MB limit
+qasm/qsvt/qsvt_bandedcirculant_20q.qasm
+qasm/qsvt/qsvt_bandedcirculant_24q.qasm
+qasm/qsvt/qsvt_bandedcirculant_28q.qasm
+qasm/qsvt/qsvt_bandedcirculant_32q.qasm
+
+/clifford_t_output/
+/pbc_output/
+circuit_benchmarks/**/*.txt
+circuit_benchmarks/**/*.qasm
+
+# Cursor IDE
+.cursor/

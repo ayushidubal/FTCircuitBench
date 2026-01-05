@@ -1,0 +1,217 @@
+{
+  "solovay_kitaev_recursion": 2,
+  "transpilation_clifford_t_time": 2.0940191745758057,
+  "t_count": 1485,
+  "tdg_count": 2160,
+  "total_t_family_count": 3645,
+  "compilation_precision_digits": null,
+  "two_qubit_gate_interaction_pairs": {
+    "(0, 1)": 10,
+    "(1, 2)": 10,
+    "(2, 3)": 10,
+    "(3, 4)": 10,
+    "(4, 5)": 10,
+    "(5, 6)": 10,
+    "(6, 7)": 10,
+    "(7, 8)": 10,
+    "(0, 8)": 10
+  },
+  "total_two_qubit_gates": 90,
+  "qubit_interaction_degree": {
+    "0": 20,
+    "1": 20,
+    "2": 20,
+    "3": 20,
+    "4": 20,
+    "5": 20,
+    "6": 20,
+    "7": 20,
+    "8": 20
+  },
+  "interaction_graph_density": 2.5,
+  "avg_qubit_interaction_degree": 20.0,
+  "std_qubit_interaction_degree": 0.0,
+  "max_qubit_interaction_degree": 20,
+  "interaction_graph_num_nodes": 9,
+  "interaction_graph_num_edges": 9,
+  "interaction_graph_is_connected": true,
+  "interaction_graph_num_connected_components": 1,
+  "interaction_graph_avg_degree": 2.0,
+  "interaction_graph_std_degree": 0.0,
+  "interaction_graph_min_degree": 2,
+  "interaction_graph_max_degree": 2,
+  "interaction_graph_degree_distribution": {
+    "2": 9
+  },
+  "interaction_graph_avg_edge_weight": 10.0,
+  "interaction_graph_std_edge_weight": 0.0,
+  "interaction_graph_min_edge_weight": 10,
+  "interaction_graph_max_edge_weight": 10,
+  "interaction_graph_total_interactions": 90,
+  "interaction_graph_edge_weight_distribution": {
+    "10": 9
+  },
+  "interaction_graph_clustering_coefficient": 0.0,
+  "interaction_graph_avg_shortest_path_length": 2.5,
+  "interaction_graph_diameter": 4,
+  "interaction_graph_modularity": 0.3086419753086419,
+  "interaction_graph_num_communities": 3,
+  "interaction_graph_community_sizes": [
+    3,
+    4,
+    2
+  ],
+  "interaction_graph_communities": [
+    [
+      0,
+      1,
+      8
+    ],
+    [
+      2,
+      3,
+      4,
+      5
+    ],
+    [
+      6,
+      7
+    ]
+  ],
+  "interaction_graph_avg_community_size": 3.0,
+  "interaction_graph_std_community_size": 0.816496580927726,
+  "interaction_graph_min_community_size": 2,
+  "interaction_graph_max_community_size": 4,
+  "clifford_gate_count": 3060,
+  "detailed_clifford_counts": {
+    "cx": 90,
+    "h": 2610,
+    "s": 360
+  },
+  "depth": 4465,
+  "t_gates_per_qubit": {
+    "1": 405,
+    "2": 405,
+    "3": 405,
+    "4": 405,
+    "5": 405,
+    "6": 405,
+    "7": 405,
+    "8": 650,
+    "0": 160
+  },
+  "avg_t_gates_per_qubit": 405.0,
+  "std_t_gates_per_qubit": 115.49410759380277,
+  "max_t_gates_on_any_qubit": 650,
+  "total_gate_count": 6705,
+  "num_qubits": 9,
+  "fidelity": null,
+  "fidelity_method": "skipped",
+  "pre_opt_rotation_operators": 3645,
+  "pre_opt_measurement_operators": 9,
+  "pre_opt_avg_operator_pauli_weight": 1.332512315270936,
+  "pre_opt_std_operator_pauli_weight": 0.47111344224517476,
+  "pre_opt_max_operator_pauli_weight": 2,
+  "pre_opt_avg_qubit_interaction_degree": 270.0,
+  "pre_opt_std_qubit_interaction_degree": 0.0,
+  "pre_opt_max_qubit_interaction_degree": 270,
+  "pbc_t_operators": 1935,
+  "pbc_measurement_operators": 9,
+  "pbc_total_operators": 1944,
+  "pbc_avg_pauli_weight": 1.4398148148148149,
+  "pbc_std_pauli_weight": 0.4963645268189749,
+  "pbc_max_pauli_weight": 2,
+  "pbc_min_pauli_weight": 1,
+  "pbc_pauli_weight_distribution": {
+    "2": 855,
+    "1": 1089
+  },
+  "pbc_multi_qubit_operator_interaction_pairs": {
+    "(0, 1)": 95,
+    "(1, 2)": 95,
+    "(2, 3)": 95,
+    "(3, 4)": 95,
+    "(4, 5)": 95,
+    "(5, 6)": 95,
+    "(6, 7)": 95,
+    "(7, 8)": 95,
+    "(0, 8)": 95
+  },
+  "pbc_qubit_interaction_degree": {
+    "0": 190,
+    "1": 190,
+    "2": 190,
+    "3": 190,
+    "4": 190,
+    "5": 190,
+    "6": 190,
+    "7": 190,
+    "8": 190
+  },
+  "pbc_avg_qubit_interaction_degree": 190.0,
+  "pbc_std_qubit_interaction_degree": 0.0,
+  "pbc_max_qubit_interaction_degree": 190,
+  "pbc_interaction_graph_num_nodes": 9,
+  "pbc_interaction_graph_num_edges": 9,
+  "pbc_interaction_graph_is_connected": true,
+  "pbc_interaction_graph_num_connected_components": 1,
+  "pbc_interaction_graph_avg_degree": 2.0,
+  "pbc_interaction_graph_std_degree": 0.0,
+  "pbc_interaction_graph_min_degree": 2,
+  "pbc_interaction_graph_max_degree": 2,
+  "pbc_interaction_graph_degree_distribution": {
+    "2": 9
+  },
+  "pbc_interaction_graph_avg_edge_weight": 135.0,
+  "pbc_interaction_graph_std_edge_weight": 0.0,
+  "pbc_interaction_graph_min_edge_weight": 135,
+  "pbc_interaction_graph_max_edge_weight": 135,
+  "pbc_interaction_graph_total_interactions": 1215,
+  "pbc_interaction_graph_edge_weight_distribution": {
+    "135": 9
+  },
+  "pbc_interaction_graph_clustering_coefficient": 0.0,
+  "pbc_interaction_graph_avg_shortest_path_length": 2.5,
+  "pbc_interaction_graph_diameter": 4,
+  "pbc_interaction_graph_modularity": 0.30864197530864196,
+  "pbc_interaction_graph_num_communities": 3,
+  "pbc_interaction_graph_community_sizes": [
+    3,
+    2,
+    4
+  ],
+  "pbc_interaction_graph_communities": [
+    [
+      0,
+      1,
+      2
+    ],
+    [
+      3,
+      4
+    ],
+    [
+      8,
+      5,
+      6,
+      7
+    ]
+  ],
+  "pbc_interaction_graph_avg_community_size": 3.0,
+  "pbc_interaction_graph_std_community_size": 0.816496580927726,
+  "pbc_interaction_graph_min_community_size": 2,
+  "pbc_interaction_graph_max_community_size": 4,
+  "pbc_total_multi_qubit_operator_applications_on_pairs": 855,
+  "pre_opt_avg_rotations_per_layer": "Not computable: missing data",
+  "pre_opt_num_measurement_ops": 9,
+  "pre_opt_std_pauli_weight": 0.47111344224517476,
+  "pre_opt_max_pauli_weight": "Not computable: missing data",
+  "pbc_avg_operator_pauli_weight": 1.4398148148148149,
+  "pbc_std_operator_pauli_weight": 0.4963645268189749,
+  "pbc_max_operator_pauli_weight": 2,
+  "pbc_rotation_operators": 1935,
+  "pbc_optimized": true,
+  "pipeline": "SK",
+  "parameter_type": "recursion_degree",
+  "parameter_value": 2
+}
