@@ -48,7 +48,8 @@ coverage.xml
 *.swp # Vim swap files
 
 .DS_Store
-Thumbs.dbcircuit_benchmarks/
+Thumbs.db
+circuit_benchmarks/
 
 # Large QASM files that exceed GitHub's 100MB limit
 qasm/qsvt/qsvt_bandedcirculant_20q.qasm
@@ -60,6 +61,3 @@ qasm/qsvt/qsvt_bandedcirculant_32q.qasm
 /pbc_output/
 circuit_benchmarks/**/*.txt
 circuit_benchmarks/**/*.qasm
-
-# Cursor IDE
-.cursor/

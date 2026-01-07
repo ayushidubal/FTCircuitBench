@@ -7,8 +7,6 @@ git clone https://github.com/AdrianHarkness/FTCircuitBench.git
 cd FTCircuitBench
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-# optional for local edits
 pip install -e .
 ```
 Requirements: Python 3.8+, `nwqec` (for fast Gridsynth/PBC, uses `fuse_t`), optional `gridsynth` binary in PATH for Python fallback.
@@ -24,22 +22,19 @@ Analyze one circuit (GS pipeline, PBC on):
 source .venv/bin/activate
 python analyze_circuit.py qasm/qft/qft_18q.qasm \
   --pipeline gs \
-  --gridsynth-precision 5 \
-  --optimize-pbc \
-  --optimize-t-maxiter 5 \
-  --artifact-root circuit_outputs
+  --gridsynth-precision 5 
 ```
 
 Generate benchmarks:
 ```bash
 source .venv/bin/activate
-python generate_benchmarks.py --max-qubits 30 --output-dir circuit_benchmarks
+python generate_benchmarks.py
 ```
 
 Notebook:
 Open `FTCircuitBench_Pipeline_Demo.ipynb` in Jupyter, select the project `.venv` kernel, run all cells.
 
-Common CLI flags: `--pipeline {gs,sk,both}`, `--gridsynth-precision N`, `--sk-recursion N`, `--layering-method {bare,v2,v3,singleton}`, `--layering-max-checks K`, `--optimize-pbc`, `--optimize-t-maxiter N`, `--skip-fidelity`, `--max-workers N`.
+Common CLI flags: `--pipeline {gs,sk,both}`, `--gridsynth-precision N`, `--sk-recursion N`, `--layering-max-checks K`, `--optimize-pbc`, `--optimize-t-maxiter N`, `--skip-fidelity`, `--max-workers N`.
 
 ## Repository structure (trimmed)
 ```

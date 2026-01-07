@@ -7,22 +7,34 @@ name = "ftcircuitbench"
 version = "0.1.0"
 description = "A benchmark suite for fault-tolerant quantum circuit compilation and analysis"
 readme = "README.md"
-requires-python = ">=3.8"
-license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+
 authors = [
-    {name = "Samuel Stein"},
+    { name = "Adrian Harkness" },
+    { name = "Samuel Stein" },
 ]
-keywords = ["quantum", "circuit", "compilation", "clifford-t", "pbc", "fault-tolerant"]
+
+keywords = [
+    "quantum",
+    "quantum-computing",
+    "fault-tolerant",
+    "circuit-compilation",
+    "clifford+t",
+    "pauli-based-computation",
+    "benchmarking",
+]
+
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Information Analysis",
 ]
 
 dependencies = [
@@ -33,14 +45,17 @@ dependencies = [
     "mpmath>=1.3.0",
     "networkx>=3.2.1",
     "matplotlib>=3.9.4",
-    "nwqec>=0.1.0",
+    "nwqec>=0.1.1",
     "tqdm>=4.67.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.4.0",
-    "pytest-mock>=3.0.0",
+    "pytest-mock>=3.14.1",
+    "ruff>=0.14.8",
+    "black>=25.11.0",
+    "isort>=6.1.0",
 ]
 
 [project.urls]
@@ -48,9 +63,6 @@ Homepage = "https://github.com/AdrianHarkness/FTCircuitBench"
 Repository = "https://github.com/AdrianHarkness/FTCircuitBench"
 Documentation = "https://github.com/AdrianHarkness/FTCircuitBench/tree/main/docs"
 Issues = "https://github.com/AdrianHarkness/FTCircuitBench/issues"
-
-[tool.ruff]
-extend-exclude = ["misc/*.ipynb"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -62,6 +74,17 @@ exclude = ["tests*", "misc*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = "test_*.py"
-python_classes = "Test*"
-python_functions = "test_*"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.ruff]
+line-length = 88
+extend-exclude = ["misc/*.ipynb"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
