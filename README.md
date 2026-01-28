@@ -51,3 +51,18 @@ FTCircuitBench/
 ├── requirements.txt
 └── docs/
 ```
+
+## Citation
+If you use FTCircuitBench in your research, please cite:
+
+```bibtex
+@misc{harkness2026ftcircuitbenchbenchmarksuitefaulttolerant,
+      title={FTCircuitBench: A Benchmark Suite for Fault-Tolerant Quantum Compilation and Architecture}, 
+      author={Adrian Harkness and Shuwen Kan and Chenxu Liu and Meng Wang and John M. Martyn and Shifan Xu and Diana Chamaki and Ethan Decker and Ying Mao and Luis F. Zuluaga and Tamás Terlaky and Ang Li and Samuel Stein},
+      year={2026},
+      eprint={2601.03185},
+      archivePrefix={arXiv},
+      primaryClass={quant-ph},
+      url={https://arxiv.org/abs/2601.03185}, 
+}
+```
