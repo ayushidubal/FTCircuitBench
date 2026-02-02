@@ -38,7 +38,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "qiskit>=2.0.0",
+    "qiskit==2.0.2",
     "numpy>=2.0.0",
     "scipy>=1.13.0",
     "sympy>=1.14.0",
