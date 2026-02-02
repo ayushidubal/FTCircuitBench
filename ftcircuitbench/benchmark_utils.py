@@ -507,11 +507,8 @@ def get_interaction_graph_rows(stats, prefix=""):
         rows.append(["Number of edges", stats[f"{prefix}interaction_graph_num_edges"]])
     # Skip graph density for PBC circuits as it's not a relevant statistic
     if not prefix.startswith("pbc_"):
-        # Prefer canonical key; fall back to legacy prefixed variant for backward compatibility
-        density_key_primary = f"{prefix}interaction_graph_density"
-        density_key_legacy = f"{prefix}interaction_graph_graph_density"
-        if density_key_primary in stats or density_key_legacy in stats:
-            density = stats.get(density_key_primary, stats.get(density_key_legacy))
+        if f"{prefix}interaction_graph_density" in stats:
+            density = stats[f"{prefix}interaction_graph_density"]
             if isinstance(density, (int, float)):
                 rows.append(["Graph density", f"{density:.4f}"])
             else:
@@ -562,46 +559,40 @@ def get_interaction_graph_rows(stats, prefix=""):
 
     # Community metrics (strip 'louvain_' legacy prefix via fallbacks)
     mod_key = f"{prefix}interaction_graph_modularity"
-    mod_legacy = f"{prefix}interaction_graph_louvain_modularity"
-    if mod_key in stats or mod_legacy in stats:
-        modularity = stats.get(mod_key, stats.get(mod_legacy))
+    if mod_key in stats:
+        modularity = stats[mod_key]
         if isinstance(modularity, (int, float)):
             rows.append(["Modularity", f"{modularity:.4f}"])
         else:
             rows.append(["Modularity", modularity])
     numc_key = f"{prefix}interaction_graph_num_communities"
-    numc_legacy = f"{prefix}interaction_graph_louvain_num_communities"
-    if numc_key in stats or numc_legacy in stats:
+    if numc_key in stats:
         rows.append(
-            ["Number of communities", stats.get(numc_key, stats.get(numc_legacy))]
+            ["Number of communities", stats[numc_key]]
         )
     avgcs_key = f"{prefix}interaction_graph_avg_community_size"
-    avgcs_legacy = f"{prefix}interaction_graph_louvain_avg_community_size"
-    if avgcs_key in stats or avgcs_legacy in stats:
-        avg_size = stats.get(avgcs_key, stats.get(avgcs_legacy))
+    if avgcs_key in stats:
+        avg_size = stats[avgcs_key]
         if isinstance(avg_size, (int, float)):
             rows.append(["Avg community size", f"{avg_size:.2f}"])
         else:
             rows.append(["Avg community size", avg_size])
     stdcs_key = f"{prefix}interaction_graph_std_community_size"
-    stdcs_legacy = f"{prefix}interaction_graph_louvain_std_community_size"
-    if stdcs_key in stats or stdcs_legacy in stats:
-        std_size = stats.get(stdcs_key, stats.get(stdcs_legacy))
+    if stdcs_key in stats:
+        std_size = stats[stdcs_key]
         if isinstance(std_size, (int, float)):
             rows.append(["Std community size", f"{std_size:.2f}"])
         else:
             rows.append(["Std community size", std_size])
     mincs_key = f"{prefix}interaction_graph_min_community_size"
-    mincs_legacy = f"{prefix}interaction_graph_louvain_min_community_size"
-    if mincs_key in stats or mincs_legacy in stats:
+    if mincs_key in stats:
         rows.append(
-            ["Min community size", stats.get(mincs_key, stats.get(mincs_legacy))]
+            ["Min community size", stats[mincs_key]]
         )
     maxcs_key = f"{prefix}interaction_graph_max_community_size"
-    maxcs_legacy = f"{prefix}interaction_graph_louvain_max_community_size"
-    if maxcs_key in stats or maxcs_legacy in stats:
+    if maxcs_key in stats:
         rows.append(
-            ["Max community size", stats.get(maxcs_key, stats.get(maxcs_legacy))]
+            ["Max community size", stats[maxcs_key]]
         )
 
     return rows

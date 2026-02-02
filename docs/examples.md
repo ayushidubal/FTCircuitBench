@@ -31,7 +31,7 @@ cfgs = [
     PipelineConfig(pipeline="sk", sk_recursion=2, calculate_fidelity=False),
 ]
 analysis = run_analysis_for_file("qasm/hhl/hhl_7q.qasm", cfgs)
-print(analysis.pipelines["gs"].pbc_stats["t_count_after_pbc"])
+print(analysis.pipelines["gs"].pbc_stats["pbc_rotation_operators"])
 ```
 
 ## Batch + notebook

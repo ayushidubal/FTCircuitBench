@@ -239,26 +239,14 @@ def main():
                 # "fidelity": stats.get("fidelity"),
                 # "fidelity method": stats.get("fidelity_method"),
                 # "transpilation clifford t time": stats.get("transpilation_clifford_t_time"),
-                # CT interaction-graph (prefer canonical key; fallback to legacy for older JSONs)
-                "I.G. graph density": (
-                    stats.get("interaction_graph_density")
-                    if "interaction_graph_density" in stats
-                    else stats.get("interaction_graph_graph_density")
-                ),
+                # CT interaction-graph
+                "I.G. graph density": stats.get("interaction_graph_density"),
                 "I.G. avg ± std degree": combine_avg_std(
                     stats.get("interaction_graph_avg_degree"),
                     stats.get("interaction_graph_std_degree"),
                 ),
-                "I.G. modularity": (
-                    stats.get("interaction_graph_modularity")
-                    if "interaction_graph_modularity" in stats
-                    else stats.get("interaction_graph_louvain_modularity")
-                ),
-                "I.G. num communities": (
-                    stats.get("interaction_graph_num_communities")
-                    if "interaction_graph_num_communities" in stats
-                    else stats.get("interaction_graph_louvain_num_communities")
-                ),
+                "I.G. modularity": stats.get("interaction_graph_modularity"),
+                "I.G. num communities": stats.get("interaction_graph_num_communities"),
             }
             # Populate gate list with counts, e.g., (h: 12, s: 8, cx: 4)
             gate_to_count = {}
@@ -332,16 +320,8 @@ def main():
                 stats.get("pbc_interaction_graph_avg_degree"),
                 stats.get("pbc_interaction_graph_std_degree"),
             ),
-            "I.G. modularity": (
-                stats.get("pbc_interaction_graph_modularity")
-                if "pbc_interaction_graph_modularity" in stats
-                else stats.get("pbc_interaction_graph_louvain_modularity")
-            ),
-            "I.G. num communities": (
-                stats.get("pbc_interaction_graph_num_communities")
-                if "pbc_interaction_graph_num_communities" in stats
-                else stats.get("pbc_interaction_graph_louvain_num_communities")
-            ),
+            "I.G. modularity": stats.get("pbc_interaction_graph_modularity"),
+            "I.G. num communities": stats.get("pbc_interaction_graph_num_communities"),
         }
         # Route PBC rows: special category goes to dedicated CSV; others to general PBC CSV
         if category == special_category:
