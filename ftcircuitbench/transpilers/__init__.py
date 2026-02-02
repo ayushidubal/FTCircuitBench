@@ -22,7 +22,7 @@ from .nwqec_ct import is_nwqec_available as _is_nwqec_available
 from .nwqec_ct import transpile_to_clifford_t_cpp as _nwqec_ct_transpiler
 
 # Import nwqec PBC transpiler
-from .nwqec_pbc import transpile_to_pbc_cpp
+from ..pbc_converter.nwqec_adapter import transpile_to_pbc_cpp
 from .sk_transpiler import transpile_to_solovay_kitaev_clifford_t as _python_sk_transpiler
 
 # Try to import C++ Gridsynth wrapper (uses nwqec internally)

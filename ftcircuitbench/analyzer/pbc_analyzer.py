@@ -232,8 +232,7 @@ def analyze_pbc_circuit(
         interaction_graph_stats = get_interaction_graph_statistics(pbc_circuit)
         # Prefix the interaction graph statistics to distinguish them from basic stats
         for key, value in interaction_graph_stats.items():
-            mapped_key = key[8:] if key.startswith("louvain_") else key
-            stats[f"pbc_interaction_graph_{mapped_key}"] = value
+            stats[f"pbc_interaction_graph_{key}"] = value
     except Exception as e:
         print(
             f"Warning: Could not compute comprehensive PBC interaction graph statistics: {e}"
@@ -548,42 +547,42 @@ def get_interaction_graph_statistics(
             communities = nx.community.louvain_communities(graph)
             modularity = nx.community.modularity(graph, communities)
 
-            stats["louvain_modularity"] = modularity
-            stats["louvain_num_communities"] = len(communities)
-            stats["louvain_community_sizes"] = [len(c) for c in communities]
-            stats["louvain_communities"] = [list(c) for c in communities]
+            stats["modularity"] = modularity
+            stats["num_communities"] = len(communities)
+            stats["community_sizes"] = [len(c) for c in communities]
+            stats["communities"] = [list(c) for c in communities]
 
             # Calculate average community size and size variation
             if communities:
                 community_sizes = [len(c) for c in communities]
-                stats["louvain_avg_community_size"] = np.mean(community_sizes)
-                stats["louvain_std_community_size"] = np.std(community_sizes)
-                stats["louvain_min_community_size"] = min(community_sizes)
-                stats["louvain_max_community_size"] = max(community_sizes)
+                stats["avg_community_size"] = np.mean(community_sizes)
+                stats["std_community_size"] = np.std(community_sizes)
+                stats["min_community_size"] = min(community_sizes)
+                stats["max_community_size"] = max(community_sizes)
             else:
-                stats["louvain_avg_community_size"] = "Not computable"
-                stats["louvain_std_community_size"] = "Not computable"
-                stats["louvain_min_community_size"] = "Not computable"
-                stats["louvain_max_community_size"] = "Not computable"
+                stats["avg_community_size"] = "Not computable"
+                stats["std_community_size"] = "Not computable"
+                stats["min_community_size"] = "Not computable"
+                stats["max_community_size"] = "Not computable"
 
         except Exception as e:
             print(f"Warning: Could not compute Louvain modularity: {e}")
-            stats["louvain_modularity"] = "Not computable"
-            stats["louvain_num_communities"] = "Not computable"
-            stats["louvain_community_sizes"] = "Not computable"
-            stats["louvain_communities"] = "Not computable"
-            stats["louvain_avg_community_size"] = "Not computable"
-            stats["louvain_std_community_size"] = "Not computable"
-            stats["louvain_min_community_size"] = "Not computable"
-            stats["louvain_max_community_size"] = "Not computable"
+            stats["modularity"] = "Not computable"
+            stats["num_communities"] = "Not computable"
+            stats["community_sizes"] = "Not computable"
+            stats["communities"] = "Not computable"
+            stats["avg_community_size"] = "Not computable"
+            stats["std_community_size"] = "Not computable"
+            stats["min_community_size"] = "Not computable"
+            stats["max_community_size"] = "Not computable"
     else:
-        stats["louvain_modularity"] = "Not computable: insufficient edges"
-        stats["louvain_num_communities"] = "Not computable: insufficient edges"
-        stats["louvain_community_sizes"] = "Not computable: insufficient edges"
-        stats["louvain_communities"] = "Not computable: insufficient edges"
-        stats["louvain_avg_community_size"] = "Not computable: insufficient edges"
-        stats["louvain_std_community_size"] = "Not computable: insufficient edges"
-        stats["louvain_min_community_size"] = "Not computable: insufficient edges"
-        stats["louvain_max_community_size"] = "Not computable: insufficient edges"
+        stats["modularity"] = "Not computable: insufficient edges"
+        stats["num_communities"] = "Not computable: insufficient edges"
+        stats["community_sizes"] = "Not computable: insufficient edges"
+        stats["communities"] = "Not computable: insufficient edges"
+        stats["avg_community_size"] = "Not computable: insufficient edges"
+        stats["std_community_size"] = "Not computable: insufficient edges"
+        stats["min_community_size"] = "Not computable: insufficient edges"
+        stats["max_community_size"] = "Not computable: insufficient edges"
 
     return stats

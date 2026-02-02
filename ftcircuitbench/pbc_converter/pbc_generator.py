@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from qiskit import QuantumCircuit, QuantumRegister
 
-from ftcircuitbench.transpilers.nwqec_pbc import (
+from ftcircuitbench.pbc_converter.nwqec_adapter import (
     is_nwqec_available,
     transpile_to_pbc_cpp,
 )

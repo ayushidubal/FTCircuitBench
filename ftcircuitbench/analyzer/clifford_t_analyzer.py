@@ -63,49 +63,73 @@ def analyze_clifford_t_circuit(
     # 2. Precision compiled to (if provided)
     stats["compilation_precision_digits"] = gridsynth_precision_used
 
-    # 3. Modularity / Interaction Graph (Basic Version: Qubit Interaction Counts)
-    # For a more formal modularity, networkx would be needed.
-    # Here, we'll count 2-qubit gate interactions.
+    # 3. Modularity / Interaction Graph
+    # Generate the interaction graph and get adjacency matrix if needed
+    interaction_graph = generate_interaction_graph(
+        circuit, return_adjacency_matrix=False, return_networkx_graph=True
+    )
     num_qubits = circuit.num_qubits
-    interaction_counts = collections.defaultdict(int)
-    qubit_degree = collections.defaultdict(
-        int
-    )  # Number of 2Q gates each qubit participates in
 
-    for instruction in circuit.data:
-        qargs = instruction.qubits
-        if len(qargs) == 2:
-            q1_idx = circuit.find_bit(qargs[0]).index
-            q2_idx = circuit.find_bit(qargs[1]).index
-            pair = tuple(sorted((q1_idx, q2_idx)))
-            interaction_counts[pair] += 1
-            qubit_degree[q1_idx] += 1
-            qubit_degree[q2_idx] += 1
+    # Extract interaction counts from the graph edge weights
+    interaction_counts = {}
+    total_interactions = 0
+    qubit_degree = collections.defaultdict(int)
 
-    stats["two_qubit_gate_interaction_pairs"] = dict(interaction_counts)
-    stats["total_two_qubit_gates"] = sum(interaction_counts.values())
-    stats["qubit_interaction_degree"] = dict(qubit_degree)
-    if num_qubits > 1 and stats["total_two_qubit_gates"] > 0:
-        # Density of the interaction graph: E / E_max where E_max = N(N-1)/2
+    # Reconstruct interaction_counts and qubit_degree from graph
+    for u, v, data in interaction_graph.edges(data=True):
+        weight = data.get("weight", 0)
+        interaction_counts[(u, v)] = weight
+        total_interactions += weight
+        qubit_degree[u] += weight  # Note: logic in original code added 1 for each interaction?
+        # In original code:
+        # interaction_counts[pair] += 1
+        # qubit_degree[q1] += 1
+        # qubit_degree[q2] += 1
+        # So qubit degree is number of interaction events (gates), not sum of weights if weight means something else.
+        # But generate_interaction_graph sets weight = count.
+        # So if we iterate edges, we are iterating unique pairs.
+        # To match original logic exactly:
+        # Original: count interactions. Graph edges have weight = count.
+        # So total_two_qubit_gates = sum(weights).
+
+    # Wait, the original qubit_degree logic:
+    # for each gate: degree[q1] += 1, degree[q2] += 1.
+    # So degree[q] is total number of 2Q gates touching q.
+    # Graph node degree (in networkx) is number of neighbors (unweighted) or weighted sum?
+    # nx.degree is unweighted unless weight argument provided.
+    # The original stats["qubit_interaction_degree"] seems to want the total number of gates.
+    # Which corresponds to weighted degree in the graph.
+
+    # Let's recalculate qubit_degree from the graph weights to be safe and consistent.
+    qubit_degree = dict(interaction_graph.degree(weight="weight"))
+    
+    # Fill in zeros for isolated qubits
+    for i in range(num_qubits):
+        if i not in qubit_degree:
+            qubit_degree[i] = 0
+
+    stats["two_qubit_gate_interaction_pairs"] = interaction_counts
+    stats["total_two_qubit_gates"] = total_interactions
+    stats["qubit_interaction_degree"] = qubit_degree
+
+    if num_qubits > 1 and total_interactions > 0:
+        # Density: E / E_max.
+        # Note: Original code used sum(interaction_counts.values()) which is total interactions (gates),
+        # divided by max_possible_edges.
+        # This is actually "weighted density" or "interaction density".
+        # Standard graph density is Num_Edges / Max_Edges.
+        # The code explicitly calculates: sum(interaction_counts.values()) / max_possible_edges.
         max_possible_edges = (num_qubits * (num_qubits - 1)) / 2
         stats["interaction_graph_density"] = (
-            sum(interaction_counts.values()) / max_possible_edges
+            total_interactions / max_possible_edges
             if max_possible_edges > 0
             else "Not computable: only one qubit"
         )
-
-        # Calculate modularity statistics based on qubit interaction degrees
-        # Modularity can be measured by how evenly distributed the interactions are
-        # Lower standard deviation indicates more modular (evenly distributed) interactions
+        
         qubit_degrees = list(qubit_degree.values())
-        if qubit_degrees:
-            stats["avg_qubit_interaction_degree"] = np.mean(qubit_degrees)
-            stats["std_qubit_interaction_degree"] = np.std(qubit_degrees)
-            stats["max_qubit_interaction_degree"] = max(qubit_degrees)
-        else:
-            stats["avg_qubit_interaction_degree"] = "Not computable: no two-qubit gates"
-            stats["std_qubit_interaction_degree"] = "Not computable: no two-qubit gates"
-            stats["max_qubit_interaction_degree"] = "Not computable: no two-qubit gates"
+        stats["avg_qubit_interaction_degree"] = np.mean(qubit_degrees)
+        stats["std_qubit_interaction_degree"] = np.std(qubit_degrees)
+        stats["max_qubit_interaction_degree"] = max(qubit_degrees)
     else:
         stats["interaction_graph_density"] = (
             "Not computable: only one qubit or no two-qubit gates"
@@ -116,15 +140,19 @@ def analyze_clifford_t_circuit(
 
     # Add comprehensive interaction graph statistics
     try:
-        interaction_graph_stats = get_interaction_graph_statistics(circuit)
+        interaction_graph_stats = get_interaction_graph_statistics(
+            circuit, graph=interaction_graph
+        )
         # Prefix the interaction graph statistics to distinguish them from basic stats
-        # Consolidate density under the canonical key: interaction_graph_density
         for key, value in interaction_graph_stats.items():
             if key == "graph_density":
+                # We already calculated a "density" above, but get_interaction_graph_statistics
+                # also returns a "graph_density" (weighted).
+                # The logic above (lines 89-95 in original) matches the logic in get_interaction_graph_statistics (lines 313-314).
+                # So we can just take it from the stats.
                 stats["interaction_graph_density"] = value
             else:
-                mapped_key = key[8:] if key.startswith("louvain_") else key
-                stats[f"interaction_graph_{mapped_key}"] = value
+                stats[f"interaction_graph_{key}"] = value
     except Exception as e:
         print(
             f"Warning: Could not compute comprehensive interaction graph statistics: {e}"
@@ -413,42 +441,42 @@ def get_interaction_graph_statistics(
             communities = nx.community.louvain_communities(graph)
             modularity = nx.community.modularity(graph, communities)
 
-            stats["louvain_modularity"] = modularity
-            stats["louvain_num_communities"] = len(communities)
-            stats["louvain_community_sizes"] = [len(c) for c in communities]
-            stats["louvain_communities"] = [list(c) for c in communities]
+            stats["modularity"] = modularity
+            stats["num_communities"] = len(communities)
+            stats["community_sizes"] = [len(c) for c in communities]
+            stats["communities"] = [list(c) for c in communities]
 
             # Calculate average community size and size variation
             if communities:
                 community_sizes = [len(c) for c in communities]
-                stats["louvain_avg_community_size"] = np.mean(community_sizes)
-                stats["louvain_std_community_size"] = np.std(community_sizes)
-                stats["louvain_min_community_size"] = min(community_sizes)
-                stats["louvain_max_community_size"] = max(community_sizes)
+                stats["avg_community_size"] = np.mean(community_sizes)
+                stats["std_community_size"] = np.std(community_sizes)
+                stats["min_community_size"] = min(community_sizes)
+                stats["max_community_size"] = max(community_sizes)
             else:
-                stats["louvain_avg_community_size"] = "Not computable"
-                stats["louvain_std_community_size"] = "Not computable"
-                stats["louvain_min_community_size"] = "Not computable"
-                stats["louvain_max_community_size"] = "Not computable"
+                stats["avg_community_size"] = "Not computable"
+                stats["std_community_size"] = "Not computable"
+                stats["min_community_size"] = "Not computable"
+                stats["max_community_size"] = "Not computable"
 
         except Exception as e:
             print(f"Warning: Could not compute Louvain modularity: {e}")
-            stats["louvain_modularity"] = "Not computable"
-            stats["louvain_num_communities"] = "Not computable"
-            stats["louvain_community_sizes"] = "Not computable"
-            stats["louvain_communities"] = "Not computable"
-            stats["louvain_avg_community_size"] = "Not computable"
-            stats["louvain_std_community_size"] = "Not computable"
-            stats["louvain_min_community_size"] = "Not computable"
-            stats["louvain_max_community_size"] = "Not computable"
+            stats["modularity"] = "Not computable"
+            stats["num_communities"] = "Not computable"
+            stats["community_sizes"] = "Not computable"
+            stats["communities"] = "Not computable"
+            stats["avg_community_size"] = "Not computable"
+            stats["std_community_size"] = "Not computable"
+            stats["min_community_size"] = "Not computable"
+            stats["max_community_size"] = "Not computable"
     else:
-        stats["louvain_modularity"] = "Not computable: insufficient edges"
-        stats["louvain_num_communities"] = "Not computable: insufficient edges"
-        stats["louvain_community_sizes"] = "Not computable: insufficient edges"
-        stats["louvain_communities"] = "Not computable: insufficient edges"
-        stats["louvain_avg_community_size"] = "Not computable: insufficient edges"
-        stats["louvain_std_community_size"] = "Not computable: insufficient edges"
-        stats["louvain_min_community_size"] = "Not computable: insufficient edges"
-        stats["louvain_max_community_size"] = "Not computable: insufficient edges"
+        stats["modularity"] = "Not computable: insufficient edges"
+        stats["num_communities"] = "Not computable: insufficient edges"
+        stats["community_sizes"] = "Not computable: insufficient edges"
+        stats["communities"] = "Not computable: insufficient edges"
+        stats["avg_community_size"] = "Not computable: insufficient edges"
+        stats["std_community_size"] = "Not computable: insufficient edges"
+        stats["min_community_size"] = "Not computable: insufficient edges"
+        stats["max_community_size"] = "Not computable: insufficient edges"
 
     return stats
