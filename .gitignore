@@ -62,3 +62,19 @@ qasm/qsvt/qsvt_bandedcirculant_32q.qasm
 /pbc_output/
 circuit_benchmarks/**/*.txt
 circuit_benchmarks/**/*.qasm
+
+# ARD-1 benchmark outputs: keep JSON/Markdown summaries, exclude large artifacts
+circuit_benchmarks_ard_1/**/*.qasm
+circuit_benchmarks_ard_1/**/*.txt
+
+# HTCondor runtime logs
+chtc/logs/
+
+# CHTC temporary probe/retry artifacts
+chtc/ftc_generate_error_probe.sub
+chtc/ftc_generate_final_missing.sub
+chtc/ftc_generate_qpe_h2_retry.sub
+chtc/ftc_generate_sx_probe.sub
+chtc/pilot_*_instances.txt
+chtc/qpe_h2_retry_instances.txt
+chtc/rerun_*.txt

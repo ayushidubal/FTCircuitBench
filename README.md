@@ -34,7 +34,13 @@ python generate_benchmarks.py
 Notebook:
 Open `FTCircuitBench_Pipeline_Demo.ipynb` in Jupyter, select the project `.venv` kernel, run all cells.
 
-Common CLI flags: `--pipeline {gs,sk,both}`, `--gridsynth-precision N`, `--sk-recursion N`, `--layering-max-checks K`, `--optimize-pbc`, `--optimize-t-maxiter N`, `--skip-fidelity`, `--max-workers N`.
+Common CLI flags: `--pipeline {gs,sk,both}`, `--gridsynth-precision N`, `--sk-recursion N`, `--layering-max-checks K`, `--optimize-pbc`, `--optimize-t-maxiter N`, `--skip-fidelity`, `--skip-pbc`, `--max-workers N`.
+
+## ARD-1 benchmark run artifacts
+- Outputs: `circuit_benchmarks_ard_1/`
+- CHTC submission assets: `chtc/`
+- Coverage and missing-circuit report: `chtc/RUN_SUMMARY.md`
+- Machine-readable per-instance status: `chtc/run_coverage_summary.json`
 
 ## Repository structure (trimmed)
 ```

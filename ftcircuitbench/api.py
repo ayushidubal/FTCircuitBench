@@ -49,6 +49,7 @@ class PipelineConfig:
         max_workers: Optional worker cap for the parallel PBC converter.
         clifford_output_path: If provided, save the Clifford+T circuit QASM to this path.
         pbc_output_prefix: If provided, save PBC layer/measurement artifacts with this prefix.
+        run_pbc: If False, skip PBC conversion and return Clifford+T-only results.
     """
 
     pipeline: PipelineName = "gs"
@@ -64,6 +65,7 @@ class PipelineConfig:
     max_workers: Optional[int] = None
     clifford_output_path: Optional[str] = None
     pbc_output_prefix: Optional[str] = None
+    run_pbc: bool = True
 
 
 @dataclass
@@ -217,37 +219,42 @@ def run_pipeline(circuit: QuantumCircuit, config: PipelineConfig) -> PipelineRes
         ),
     )
 
-    # Step 2: PBC conversion
+    # Step 2: PBC conversion (optional)
     effective_layering_method = (
         "v3"
         if config.layering_method == "v2" and config.layering_max_checks is not None
         else config.layering_method
     )
-    pbc_start = time.time()
-    pbc_circuit, pbc_stats = convert_to_pbc_circuit(
-        clifford_t_circuit.copy(),
-        optimize_pbc=config.optimize_pbc,
-        optimize_t_maxiter=config.optimize_t_maxiter,
-        if_print_rpc=False,
-        layering_method=effective_layering_method,
-        layering_max_checks=config.layering_max_checks,
-        output_prefix=config.pbc_output_prefix,
-        max_workers=config.max_workers,
-        use_nwqec=True,
-    )
-    timings["pbc_conversion_time"] = time.time() - pbc_start
-    if config.pbc_output_prefix:
-        artifacts.update(
-            {
-                "pbc_pre_opt_layers": f"{config.pbc_output_prefix}_pre_opt_tlayers.txt",
-                "pbc_pre_opt_measurement_basis": f"{config.pbc_output_prefix}_pre_opt_measure_basis.txt",
-                "pbc_post_opt_layers": f"{config.pbc_output_prefix}_post_opt_tlayers.txt",
-                "pbc_post_opt_measurement_basis": f"{config.pbc_output_prefix}_post_opt_measure_basis.txt",
-            }
+    if config.run_pbc:
+        pbc_start = time.time()
+        pbc_circuit, pbc_stats = convert_to_pbc_circuit(
+            clifford_t_circuit.copy(),
+            optimize_pbc=config.optimize_pbc,
+            optimize_t_maxiter=config.optimize_t_maxiter,
+            if_print_rpc=False,
+            layering_method=effective_layering_method,
+            layering_max_checks=config.layering_max_checks,
+            output_prefix=config.pbc_output_prefix,
+            max_workers=config.max_workers,
+            use_nwqec=True,
         )
+        timings["pbc_conversion_time"] = time.time() - pbc_start
+        if config.pbc_output_prefix:
+            artifacts.update(
+                {
+                    "pbc_pre_opt_layers": f"{config.pbc_output_prefix}_pre_opt_tlayers.txt",
+                    "pbc_pre_opt_measurement_basis": f"{config.pbc_output_prefix}_pre_opt_measure_basis.txt",
+                    "pbc_post_opt_layers": f"{config.pbc_output_prefix}_post_opt_tlayers.txt",
+                    "pbc_post_opt_measurement_basis": f"{config.pbc_output_prefix}_post_opt_measure_basis.txt",
+                }
+            )
 
-    pbc_analysis = analyze_pbc_circuit(pbc_circuit, pbc_conversion_stats=pbc_stats)
-    combined_pbc_stats = {**pbc_stats, **pbc_analysis}
+        pbc_analysis = analyze_pbc_circuit(pbc_circuit, pbc_conversion_stats=pbc_stats)
+        combined_pbc_stats = {**pbc_stats, **pbc_analysis}
+    else:
+        timings["pbc_conversion_time"] = 0.0
+        pbc_circuit = clifford_t_circuit.copy()
+        combined_pbc_stats = {"pbc_status": "skipped"}
 
     # Step 3: Fidelity (optional)
     fidelity_result: Optional[Dict[str, Any]] = None
@@ -279,6 +286,7 @@ def run_pipeline(circuit: QuantumCircuit, config: PipelineConfig) -> PipelineRes
             "layering_max_checks": config.layering_max_checks,
             "optimize_t_maxiter": config.optimize_t_maxiter,
             "max_workers": config.max_workers,
+            "run_pbc": config.run_pbc,
         }
     )
 

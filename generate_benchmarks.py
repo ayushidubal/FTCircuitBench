@@ -1,9 +1,10 @@
 # generate_benchmarks.py (Corrected)
 import argparse
+import json
 import os
 import re
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from qiskit import QuantumCircuit
 
@@ -27,8 +28,21 @@ from ftcircuitbench.reports.summary_markdown import generate_summary_markdown
 
 # Default parameter sets
 DEFAULT_SK_DEGREES = [1, 2]
-DEFAULT_GS_PRECISIONS = [5, 8]
+DEFAULT_GS_PRECISIONS = [3, 10]
 BASE_OUTPUT_DIR = "circuit_benchmarks"
+
+
+def _flatten_benchmark_instances(
+    benchmarks_config: Dict[str, Dict[str, str]],
+) -> List[Tuple[str, str, str]]:
+    """Build a deterministic list of (category, instance_name, qasm_path)."""
+    instances: List[Tuple[str, str, str]] = []
+    for category in sorted(benchmarks_config.keys()):
+        for instance_name in sorted(benchmarks_config[category].keys()):
+            instances.append(
+                (category, instance_name, benchmarks_config[category][instance_name])
+            )
+    return instances
 
 
 def quick_qubit_count_check(qasm_file_path: str) -> int:
@@ -109,6 +123,115 @@ def quick_qubit_count_check(qasm_file_path: str) -> int:
     return total_qubits
 
 
+def _get_param_str(pipeline_type: str, parameter_value: int) -> str:
+    param_type = "precision_level" if pipeline_type == "gs" else "recursion_degree"
+    return get_output_param_str(pipeline_type, parameter_value, param_type)
+
+
+def _get_param_dir(
+    output_dir: str,
+    category: str,
+    instance_name: str,
+    pipeline_type: str,
+    parameter_value: int,
+) -> str:
+    if pipeline_type == "gs":
+        return os.path.join(
+            output_dir,
+            category,
+            instance_name,
+            "GS",
+            f"precision_level_{parameter_value}",
+        )
+    return os.path.join(
+        output_dir,
+        category,
+        instance_name,
+        "SK",
+        f"recursion_degree_{parameter_value}",
+    )
+
+
+def _variation_outputs_exist(
+    pipeline_type: str,
+    parameter_value: int,
+    param_specific_dir: str,
+    instance_name: str,
+) -> bool:
+    param_str = _get_param_str(pipeline_type, parameter_value)
+    clifford_t_qasm_path = get_clifford_t_qasm_path(
+        param_specific_dir, instance_name, param_str
+    )
+    stats_json_path = get_stats_json_path(param_specific_dir, instance_name, param_str)
+    return os.path.isfile(clifford_t_qasm_path) and os.path.isfile(stats_json_path)
+
+
+def _load_existing_stats_if_present(
+    pipeline_type: str,
+    parameter_value: int,
+    param_specific_dir: str,
+    instance_name: str,
+) -> Optional[Dict[str, Any]]:
+    param_str = _get_param_str(pipeline_type, parameter_value)
+    stats_json_path = get_stats_json_path(param_specific_dir, instance_name, param_str)
+    if not os.path.isfile(stats_json_path):
+        return None
+    try:
+        with open(stats_json_path, "r") as f:
+            return json.load(f)
+    except Exception as exc:
+        print(f"    ⚠️ Could not read existing stats at {stats_json_path}: {exc}")
+        return None
+
+
+def _all_requested_outputs_exist(
+    args: argparse.Namespace,
+    category: str,
+    instance_name: str,
+    sk_params: List[int],
+    gs_params: List[int],
+) -> bool:
+    checks: List[bool] = []
+    if not args.skip_sk:
+        for degree in sk_params:
+            param_dir = _get_param_dir(
+                args.output_dir, category, instance_name, "sk", degree
+            )
+            checks.append(
+                _variation_outputs_exist("sk", degree, param_dir, instance_name)
+            )
+    if not args.skip_gs:
+        for precision in gs_params:
+            param_dir = _get_param_dir(
+                args.output_dir, category, instance_name, "gs", precision
+            )
+            checks.append(
+                _variation_outputs_exist("gs", precision, param_dir, instance_name)
+            )
+    return bool(checks) and all(checks)
+
+
+def _load_instance_filter(instances_file: str) -> Set[str]:
+    """Load normalized `category/instance` keys from a plain-text file."""
+    selected: Set[str] = set()
+    with open(instances_file, "r") as f:
+        for line in f:
+            raw = line.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            key = raw
+            if key.startswith("qasm/"):
+                key = key[len("qasm/") :]
+            if key.endswith(".qasm"):
+                key = key[: -len(".qasm")]
+            parts = key.split("/")
+            if len(parts) < 2:
+                print(f"  ⚠️ Ignoring malformed instance key: {raw}")
+                continue
+            selected.add(f"{parts[0]}/{parts[1]}")
+    return selected
+
+
 def process_pipeline_variation(
     pipeline_type: str,
     parameter_value: int,
@@ -128,9 +251,16 @@ def process_pipeline_variation(
     clifford_t_qasm_path = get_clifford_t_qasm_path(
         param_specific_dir, circuit_name, param_str
     )
-    full_pbc_output_prefix = get_pbc_prefix(param_specific_dir, circuit_name, param_str)
+    full_pbc_output_prefix = (
+        get_pbc_prefix(param_specific_dir, circuit_name, param_str)
+        if not args.skip_pbc
+        else None
+    )
 
-    print("    Converting to PBC...")
+    if args.skip_pbc:
+        print("    Skipping PBC conversion...")
+    else:
+        print("    Converting to PBC...")
     sys.stdout.flush()
 
     effective_layering_method = (
@@ -159,6 +289,7 @@ def process_pipeline_variation(
         return_intermediate=True,
         clifford_output_path=clifford_t_qasm_path,
         pbc_output_prefix=full_pbc_output_prefix,
+        run_pbc=not args.skip_pbc,
     )
 
     result = run_pipeline(original_qc, config)
@@ -182,16 +313,17 @@ def process_pipeline_variation(
     if numeric_timings:
         stats["total_time"] = sum(numeric_timings)
 
-    combine_pbc_files_same_dir(
-        os.path.dirname(full_pbc_output_prefix),
-        os.path.basename(full_pbc_output_prefix),
-        "pre_opt",
-    )
-    combine_pbc_files_same_dir(
-        os.path.dirname(full_pbc_output_prefix),
-        os.path.basename(full_pbc_output_prefix),
-        "post_opt",
-    )
+    if full_pbc_output_prefix:
+        combine_pbc_files_same_dir(
+            os.path.dirname(full_pbc_output_prefix),
+            os.path.basename(full_pbc_output_prefix),
+            "pre_opt",
+        )
+        combine_pbc_files_same_dir(
+            os.path.dirname(full_pbc_output_prefix),
+            os.path.basename(full_pbc_output_prefix),
+            "post_opt",
+        )
 
     stats.update(
         {
@@ -244,6 +376,11 @@ def main():
         "--skip-gs", action="store_true", help="Skip Gridsynth pipeline"
     )
     parser.add_argument(
+        "--skip-pbc",
+        action="store_true",
+        help="Skip PBC conversion and only benchmark Clifford+T synthesis",
+    )
+    parser.add_argument(
         "--optimize-t-maxiter",
         type=int,
         default=3,
@@ -276,6 +413,29 @@ def main():
         action="store_true",
         help="Force Python backend even if nwqec is available",
     )
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=1,
+        help="Total number of disjoint shards (default: 1, i.e. no sharding)",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="Zero-based shard index to execute (default: 0)",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip work when expected output artifacts already exist",
+    )
+    parser.add_argument(
+        "--instances-file",
+        type=str,
+        default=None,
+        help="Optional file with one `category/instance` per line to restrict work",
+    )
 
     group_detailed = parser.add_mutually_exclusive_group()
     group_detailed.add_argument(
@@ -293,6 +453,10 @@ def main():
     parser.set_defaults(detailed=False)  # Default to false for cleaner benchmark logs
 
     args = parser.parse_args()
+    if args.num_shards < 1:
+        raise ValueError("--num-shards must be >= 1")
+    if args.shard_index < 0 or args.shard_index >= args.num_shards:
+        raise ValueError("--shard-index must satisfy 0 <= shard-index < num-shards")
 
     # Benchmark each circuit across the default parameter grids
     sk_params = [DEFAULT_SK_DEGREES[0]] if args.quick else DEFAULT_SK_DEGREES
@@ -300,147 +464,226 @@ def main():
 
     print(f"Processing circuits with <= {args.max_qubits} qubits.")
     print(f"Output directory: {args.output_dir}")
-    print("Using parallel PBC conversion (Python fallback only).")
-    if args.optimize_t_maxiter == 0:
+    if args.skip_pbc:
+        print("PBC conversion is DISABLED.")
+    else:
+        print("Using parallel PBC conversion (Python fallback only).")
+    if not args.skip_pbc and args.optimize_t_maxiter == 0:
         print("PBC T-gate optimization is DISABLED.")
 
     benchmarks_config = find_all_qasm_files("qasm")
     os.makedirs(args.output_dir, exist_ok=True)
 
-    total_instances = sum(len(qasm_files) for qasm_files in benchmarks_config.values())
-    processed_instances = 0
+    all_instances = _flatten_benchmark_instances(benchmarks_config)
+    total_discovered_instances = len(all_instances)
 
-    for category, qasm_files_config in benchmarks_config.items():
-        for instance_name, qasm_file_path in qasm_files_config.items():
-            processed_instances += 1
+    if args.instances_file:
+        requested_instance_keys = _load_instance_filter(args.instances_file)
+        discovered_map: Dict[str, Tuple[str, str, str]] = {
+            f"{category}/{instance_name}": (category, instance_name, qasm_file_path)
+            for category, instance_name, qasm_file_path in all_instances
+        }
+        missing_keys = sorted(
+            key for key in requested_instance_keys if key not in discovered_map
+        )
+        if missing_keys:
             print(
-                f"\n[{processed_instances}/{total_instances}] 📄 Processing: {category}/{instance_name}"
+                f"⚠️ {len(missing_keys)} entries from {args.instances_file} "
+                "were not found under qasm/"
             )
+            for key in missing_keys[:10]:
+                print(f"   - {key}")
+            if len(missing_keys) > 10:
+                print(f"   ... and {len(missing_keys) - 10} more")
 
-            try:
-                # Use quick_qubit_count_check to check if the circuit exceeds max_qubits
-                qubit_count = quick_qubit_count_check(qasm_file_path)
-                if qubit_count > args.max_qubits:
-                    print(f"  Skipping: {qubit_count} qubits > {args.max_qubits}")
-                    continue
+        all_instances = [
+            item
+            for item in all_instances
+            if f"{item[0]}/{item[1]}" in requested_instance_keys
+        ]
+        print(
+            f"Instance filter active: {len(all_instances)}/{total_discovered_instances} "
+            "circuits selected"
+        )
 
-                original_qc = load_qasm_circuit(qasm_file_path, is_file=True)
-                original_qc_for_fidelity = original_qc.copy()
-                original_qc_for_fidelity.remove_final_measurements(inplace=True)
+    total_instances = len(all_instances)
+    sharding_pool = all_instances
+    if args.skip_existing:
+        sharding_pool = [
+            (category, instance_name, qasm_file_path)
+            for category, instance_name, qasm_file_path in all_instances
+            if not _all_requested_outputs_exist(
+                args, category, instance_name, sk_params, gs_params
+            )
+        ]
+        print(
+            f"Skip-existing prefilter: {len(sharding_pool)}/{total_instances} "
+            "circuits still need requested outputs"
+        )
 
-                # Decide if singleton layering should be forced for this instance
-                # ================================================================
-                force_singleton = False
-                # Category-based rules
-                if category.startswith("hamiltonians"):
-                    force_singleton = True
-                if category.startswith("qpe"):
-                    force_singleton = True
-                if category.startswith("qsvt"):
-                    force_singleton = True
-                # Instance-based size rules
-                # hhl greater than 7 qubits
-                if category.startswith("hhl") and qubit_count > 7:
-                    force_singleton = True
-                # qft greater than 18 qubits
-                if category.startswith("qft") and qubit_count > 18:
-                    force_singleton = True
+    selected_instances = [
+        item
+        for idx, item in enumerate(sharding_pool)
+        if idx % args.num_shards == args.shard_index
+    ]
+    shard_total = len(selected_instances)
 
-                layering_override = "singleton" if force_singleton else None
-                # When forcing singleton, skip optimization explicitly for speed
-                optimize_override = 0 if force_singleton else None
-                # ================================================================
+    print(
+        f"Shard configuration: index {args.shard_index}/{args.num_shards - 1} "
+        f"({shard_total}/{len(sharding_pool)} circuits assigned)"
+    )
 
-                # Process SK pipeline
-                if not args.skip_sk:
-                    all_sk_stats = []
-                    for degree in sk_params:
-                        param_dir = os.path.join(
-                            args.output_dir,
-                            category,
-                            instance_name,
-                            "SK",
-                            f"recursion_degree_{degree}",
+    for processed_instances, (category, instance_name, qasm_file_path) in enumerate(
+        selected_instances, start=1
+    ):
+        print(
+            f"\n[{processed_instances}/{shard_total}] 📄 Processing: {category}/{instance_name}"
+        )
+
+        try:
+            # Use quick_qubit_count_check to check if the circuit exceeds max_qubits
+            if args.skip_existing and _all_requested_outputs_exist(
+                args, category, instance_name, sk_params, gs_params
+            ):
+                print("  ⏭️ Skipping: all requested outputs already exist")
+                continue
+
+            qubit_count = quick_qubit_count_check(qasm_file_path)
+            if qubit_count > args.max_qubits:
+                print(f"  Skipping: {qubit_count} qubits > {args.max_qubits}")
+                continue
+
+            original_qc = load_qasm_circuit(qasm_file_path, is_file=True)
+            original_qc_for_fidelity = original_qc.copy()
+            original_qc_for_fidelity.remove_final_measurements(inplace=True)
+
+            # Decide if singleton layering should be forced for this instance
+            # ================================================================
+            force_singleton = False
+            # Category-based rules
+            if category.startswith("hamiltonians"):
+                force_singleton = True
+            if category.startswith("qpe"):
+                force_singleton = True
+            if category.startswith("qsvt"):
+                force_singleton = True
+            # Instance-based size rules
+            # hhl greater than 7 qubits
+            if category.startswith("hhl") and qubit_count > 7:
+                force_singleton = True
+            # qft greater than 18 qubits
+            if category.startswith("qft") and qubit_count > 18:
+                force_singleton = True
+
+            layering_override = "singleton" if force_singleton else None
+            # When forcing singleton, skip optimization explicitly for speed
+            optimize_override = 0 if force_singleton else None
+            # ================================================================
+
+            # Process SK pipeline
+            if not args.skip_sk:
+                all_sk_stats = []
+                for degree in sk_params:
+                    param_dir = _get_param_dir(
+                        args.output_dir, category, instance_name, "sk", degree
+                    )
+                    if args.skip_existing and _variation_outputs_exist(
+                        "sk", degree, param_dir, instance_name
+                    ):
+                        print(f"  ⏭️ SK (degree {degree}) already exists, skipping")
+                        existing_stats = _load_existing_stats_if_present(
+                            "sk", degree, param_dir, instance_name
                         )
-                        try:
-                            run_stats = process_pipeline_variation(
-                                "sk",
-                                degree,
-                                original_qc_for_fidelity,
-                                param_dir,
-                                instance_name,
-                                args,
-                                layering_method_override=layering_override,
-                                optimize_t_maxiter_override=optimize_override,
-                            )
-                            all_sk_stats.append(run_stats)
-                            print(f"  ✅ SK (degree {degree})")
-                        except Exception as e:
-                            print(f"  ❌ SK (degree {degree}) FAILED: {e}")
-
-                    if all_sk_stats:
-                        summary_path = os.path.join(
-                            args.output_dir,
-                            category,
+                        if existing_stats:
+                            all_sk_stats.append(existing_stats)
+                        continue
+                    try:
+                        run_stats = process_pipeline_variation(
+                            "sk",
+                            degree,
+                            original_qc_for_fidelity,
+                            param_dir,
                             instance_name,
-                            "SK",
-                            "comparison_summary.md",
+                            args,
+                            layering_method_override=layering_override,
+                            optimize_t_maxiter_override=optimize_override,
                         )
-                        with open(summary_path, "w") as f:
-                            for s in all_sk_stats:
-                                f.write(
-                                    generate_summary_markdown(
-                                        s, instance_name, "SK", s["parameter_value"]
-                                    )
+                        all_sk_stats.append(run_stats)
+                        print(f"  ✅ SK (degree {degree})")
+                    except Exception as e:
+                        print(f"  ❌ SK (degree {degree}) FAILED: {e}")
+
+                if all_sk_stats:
+                    summary_path = os.path.join(
+                        args.output_dir,
+                        category,
+                        instance_name,
+                        "SK",
+                        "comparison_summary.md",
+                    )
+                    with open(summary_path, "w") as f:
+                        for s in all_sk_stats:
+                            f.write(
+                                generate_summary_markdown(
+                                    s, instance_name, "SK", s["parameter_value"]
                                 )
-                                f.write("\n\n---\n\n")
-
-                # Process GS pipeline
-                if not args.skip_gs:
-                    all_gs_stats = []
-                    for precision in gs_params:
-                        param_dir = os.path.join(
-                            args.output_dir,
-                            category,
-                            instance_name,
-                            "GS",
-                            f"precision_level_{precision}",
-                        )
-                        try:
-                            run_stats = process_pipeline_variation(
-                                "gs",
-                                precision,
-                                original_qc_for_fidelity,
-                                param_dir,
-                                instance_name,
-                                args,
-                                layering_method_override=layering_override,
-                                optimize_t_maxiter_override=optimize_override,
                             )
-                            all_gs_stats.append(run_stats)
-                            print(f"  ✅ GS (precision {precision})")
-                        except Exception as e:
-                            print(f"  ❌ GS (precision {precision}) FAILED: {e}")
+                            f.write("\n\n---\n\n")
 
-                    if all_gs_stats:
-                        summary_path = os.path.join(
-                            args.output_dir,
-                            category,
-                            instance_name,
-                            "GS",
-                            "comparison_summary.md",
+            # Process GS pipeline
+            if not args.skip_gs:
+                all_gs_stats = []
+                for precision in gs_params:
+                    param_dir = _get_param_dir(
+                        args.output_dir, category, instance_name, "gs", precision
+                    )
+                    if args.skip_existing and _variation_outputs_exist(
+                        "gs", precision, param_dir, instance_name
+                    ):
+                        print(
+                            f"  ⏭️ GS (precision {precision}) already exists, skipping"
                         )
-                        with open(summary_path, "w") as f:
-                            for s in all_gs_stats:
-                                f.write(
-                                    generate_summary_markdown(
-                                        s, instance_name, "GS", s["parameter_value"]
-                                    )
-                                )
-                                f.write("\n\n---\n\n")
+                        existing_stats = _load_existing_stats_if_present(
+                            "gs", precision, param_dir, instance_name
+                        )
+                        if existing_stats:
+                            all_gs_stats.append(existing_stats)
+                        continue
+                    try:
+                        run_stats = process_pipeline_variation(
+                            "gs",
+                            precision,
+                            original_qc_for_fidelity,
+                            param_dir,
+                            instance_name,
+                            args,
+                            layering_method_override=layering_override,
+                            optimize_t_maxiter_override=optimize_override,
+                        )
+                        all_gs_stats.append(run_stats)
+                        print(f"  ✅ GS (precision {precision})")
+                    except Exception as e:
+                        print(f"  ❌ GS (precision {precision}) FAILED: {e}")
 
-            except Exception as e:
-                print(f"  ❌ FATAL ERROR processing instance {instance_name}: {e}")
+                if all_gs_stats:
+                    summary_path = os.path.join(
+                        args.output_dir,
+                        category,
+                        instance_name,
+                        "GS",
+                        "comparison_summary.md",
+                    )
+                    with open(summary_path, "w") as f:
+                        for s in all_gs_stats:
+                            f.write(
+                                generate_summary_markdown(
+                                    s, instance_name, "GS", s["parameter_value"]
+                                )
+                            )
+                            f.write("\n\n---\n\n")
+
+        except Exception as e:
+            print(f"  ❌ FATAL ERROR processing instance {instance_name}: {e}")
 
     print("\n" + "=" * 60)
     print("✅ BENCHMARK GENERATION COMPLETE")

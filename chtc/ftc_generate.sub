@@ -1,0 +1,25 @@
+universe = docker
+docker_image = ayushidubal/ftcircuitbench:v0
+
+NUM_SHARDS = 46
+OUTPUT_DIR_BASE = circuit_benchmarks_ard_1
+OUTPUT_DIR = $(OUTPUT_DIR_BASE)
+
+executable = chtc/run_generate_benchmarks_chtc.sh
+arguments = $(Process)
+log = chtc/logs/chtc_generate_shard$(Process)_$(Cluster)-$(ProcId).log
+output = chtc/logs/chtc_generate_shard$(Process)_$(Cluster)-$(ProcId).out
+error = chtc/logs/chtc_generate_shard$(Process)_$(Cluster)-$(ProcId).err
+
+should_transfer_files = YES
+preserve_relative_paths = True
+when_to_transfer_output = ON_EXIT
+transfer_input_files = generate_benchmarks.py, ftcircuitbench, qasm, chtc/run_generate_benchmarks_chtc.sh, chtc/remaining_gs_instances.txt
+transfer_output_files = $(OUTPUT_DIR)
+
+request_cpus = 2
+request_memory = 32GB
+request_disk = 16GB
+environment = "RAYON_NUM_THREADS=2 NUM_SHARDS=$(NUM_SHARDS) OUTPUT_DIR_BASE=$(OUTPUT_DIR_BASE) USE_SHARD_OUTPUT=0 SKIP_EXISTING=1 INSTANCES_FILE=chtc/remaining_gs_instances.txt"
+
+queue $(NUM_SHARDS)
