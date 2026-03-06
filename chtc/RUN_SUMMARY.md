@@ -6,8 +6,6 @@
 - GS precisions: `3` and `10`
 - PBC conversion: skipped (`--skip-pbc`)
 - Fidelity computation: skipped (`--skip-fidelity`)
-- Main shard count: `46` (`chtc/ftc_generate.sub`)
-- Circuit filter used for main sweep: `chtc/remaining_gs_instances.txt`
 
 ## Coverage
 
