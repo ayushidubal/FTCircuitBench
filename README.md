@@ -36,15 +36,13 @@ Open `FTCircuitBench_Pipeline_Demo.ipynb` in Jupyter, select the project `.venv`
 
 Common CLI flags: `--pipeline {gs,sk,both}`, `--gridsynth-precision N`, `--sk-recursion N`, `--layering-max-checks K`, `--optimize-pbc`, `--optimize-t-maxiter N`, `--skip-fidelity`, `--skip-pbc`, `--max-workers N`.
 
-## ARD-1 benchmark run artifacts
-- Outputs: `circuit_benchmarks_ard_1/`
-- CHTC submission assets: `chtc/`
-- Coverage and missing-circuit report: `chtc/RUN_SUMMARY.md`
-- Machine-readable per-instance status: `chtc/run_coverage_summary.json`
+## Compiled ARD archives
+`circuit_compiled/prec_3` and `circuit_compiled/prec_10` each contain one zip archive per family (`adder`, `hamiltonians`, `hamiltonians_5trotter`, `hhl`, `qft`, `qpe`, `qsvt`). Unzipping a family archive restores that family's `precision_level_3` or `precision_level_10` QASM and stats JSON files in their original directory layout.
 
 ## Repository structure (trimmed)
 ```
 FTCircuitBench/
+├── circuit_compiled/         # Zipped ARD compiled circuits grouped by precision and family
 ├── ftcircuitbench/            # Library code (API, analyzers, PBC converter, transpilers)
 ├── analyze_circuit.py         # CLI: analyze one circuit
 ├── generate_benchmarks.py     # CLI: batch benchmarks
