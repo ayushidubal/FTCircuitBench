@@ -76,11 +76,16 @@ FTCircuitBench/
 ├── FTCircuitBench_Pipeline_Demo.ipynb  # Walkthrough notebook
 ├── qasm/                               # Input benchmark circuits (QASM 2.0)
 ├── circuit_stats_output/               # Sample output statistics (JSON)
+├── circuit_compiled/                   # Zipped ARD compiled circuits grouped by precision and family
 ├── figs/                               # Reference output figures (PDF)
 ├── tests/                              # pytest test suite
 ├── docs/                               # API reference, installation guide, examples
 └── pyproject.toml
 ```
+
+## Compiled ARD Archives
+
+`circuit_compiled/prec_3` and `circuit_compiled/prec_10` each contain one zip archive per family (`adder`, `hamiltonians`, `hamiltonians_5trotter`, `hhl`, `qft`, `qpe`, `qsvt`). Unzipping a family archive restores that family's `precision_level_3` or `precision_level_10` QASM and stats JSON files in their original directory layout.
 
 ## Documentation
 

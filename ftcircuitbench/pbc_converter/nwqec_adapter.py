@@ -53,6 +53,7 @@ def transpile_to_pbc_cpp(
     epsilon: float | None = None,
     t_opt: bool = False,
     keep_cx: bool = False,
+    output_prefix: str | None = None,
     forbid_python_fallback: bool = True,
 ) -> Tuple[QuantumCircuit, Dict]:
     import nwqec as nq
@@ -135,6 +136,14 @@ def transpile_to_pbc_cpp(
 
     # Export to QASM and adapt to PBM circuit
     qasm = circ.to_qasm()
+    if output_prefix:
+        output_dir = os.path.dirname(output_prefix)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        with open(f"{output_prefix}_pre_opt.txt", "w", encoding="utf-8") as handle:
+            handle.write(pre_qasm)
+        with open(f"{output_prefix}_post_opt.txt", "w", encoding="utf-8") as handle:
+            handle.write(qasm)
     pbc_qc, stats = pbc_qasm_to_pbm(qasm)
     # Analyze post-optimization PBC circuit to populate pbc_* stats
     post_analysis = analyze_pbc_circuit(pbc_qc, pbc_conversion_stats=stats)

@@ -27,7 +27,7 @@ from ftcircuitbench.reports.summary_markdown import generate_summary_markdown
 
 # Default parameter sets
 DEFAULT_SK_DEGREES = [1, 2]
-DEFAULT_GS_PRECISIONS = [5, 8]
+DEFAULT_GS_PRECISIONS = [3, 10]
 BASE_OUTPUT_DIR = "circuit_benchmarks"
 
 
@@ -182,16 +182,15 @@ def process_pipeline_variation(
     if numeric_timings:
         stats["total_time"] = sum(numeric_timings)
 
-    combine_pbc_files_same_dir(
-        os.path.dirname(full_pbc_output_prefix),
-        os.path.basename(full_pbc_output_prefix),
-        "pre_opt",
-    )
-    combine_pbc_files_same_dir(
-        os.path.dirname(full_pbc_output_prefix),
-        os.path.basename(full_pbc_output_prefix),
-        "post_opt",
-    )
+    for stage in ("pre_opt", "post_opt"):
+        tlayers_path = f"{full_pbc_output_prefix}_{stage}_tlayers.txt"
+        measure_path = f"{full_pbc_output_prefix}_{stage}_measure_basis.txt"
+        if os.path.exists(tlayers_path) or os.path.exists(measure_path):
+            combine_pbc_files_same_dir(
+                os.path.dirname(full_pbc_output_prefix),
+                os.path.basename(full_pbc_output_prefix),
+                stage,
+            )
 
     stats.update(
         {

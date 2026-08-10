@@ -242,6 +242,7 @@ def convert_to_pbc_circuit(
             is_file=False,
             t_opt=optimize_pbc and optimize_t_maxiter > 0,
             keep_cx=False,
+            output_prefix=output_prefix,
             forbid_python_fallback=False,
         )
         fuse_applied = basic_stats.get("pbc_fuse_t_applied", False)
