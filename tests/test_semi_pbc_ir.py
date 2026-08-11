@@ -142,7 +142,7 @@ def test_read_jsonl_wraps_operation_errors_with_line_context(tmp_path):
         read_jsonl(path)
 
 
-def test_write_jsonl_streams_records_from_iterator(tmp_path):
+def test_write_jsonl_does_not_commit_partial_output_on_iterator_failure(tmp_path):
     path = tmp_path / "streamed.semi_pbc.jsonl"
     header = SemiPBCHeader(k=1, data_qubits=1)
 
@@ -153,17 +153,41 @@ def test_write_jsonl_streams_records_from_iterator(tmp_path):
     with pytest.raises(RuntimeError, match="iterator stopped"):
         write_jsonl(path, header, ops())
 
-    assert path.exists()
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
-    assert rows == [
-        {"format": "semi-pbc", "version": 1, "k": 1, "data_qubits": 1},
-        {"id": 0, "op": "h", "qubits": ["q0"]},
-    ]
+    assert not path.exists()
+
+
+def test_write_jsonl_does_not_clobber_existing_output_on_iterator_failure(tmp_path):
+    path = tmp_path / "existing.semi_pbc.jsonl"
+    original = '{"format":"semi-pbc","version":1,"k":1,"data_qubits":0}\n'
+    path.write_text(original)
+    header = SemiPBCHeader(k=1, data_qubits=1)
+
+    def ops():
+        yield SemiPBCOp.clifford(0, "h", ("q0",))
+        raise RuntimeError("iterator stopped after first op")
+
+    with pytest.raises(RuntimeError, match="iterator stopped"):
+        write_jsonl(path, header, ops())
+
+    assert path.read_text() == original
 
 
 def test_header_rejects_invalid_k():
     with pytest.raises(ValueError, match="k"):
         SemiPBCHeader(k=0, data_qubits=3)
+
+
+def test_header_rejects_boolean_version():
+    with pytest.raises(ValueError, match="version"):
+        SemiPBCHeader(k=1, data_qubits=1, version=True)
+
+
+def test_write_jsonl_rejects_non_string_source_id(tmp_path):
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    op = SemiPBCOp.clifford(0, "h", ("q0",), source_id=123)
+
+    with pytest.raises(ValueError, match="source_id"):
+        write_jsonl(tmp_path / "bad_source_id.jsonl", header, [op])
 
 
 def test_pauli_op_rejects_weight_above_k_when_validated():
@@ -177,6 +201,30 @@ def test_pauli_op_rejects_data_qubit_outside_header_width():
     header = SemiPBCHeader(k=1, data_qubits=1)
     op = SemiPBCOp.pauli_rotation(0, PauliTerm.from_pairs([("q1", "Z")]))
     with pytest.raises(ValueError, match="outside"):
+        op.validate(header)
+
+
+@pytest.mark.parametrize(
+    ("op", "message"),
+    [
+        (SemiPBCOp.clifford(0, "h", (0,)), "qubit"),
+        (SemiPBCOp.alloc(0, 0), "qubit"),
+        (SemiPBCOp.release(0, 0), "qubit"),
+        (
+            SemiPBCOp.pauli_rotation(0, PauliTerm(((0, "Z"),))),
+            "qubit",
+        ),
+        (
+            SemiPBCOp.measurement(0, PauliTerm.from_pairs([("q0", "Z")]), result=0),
+            "result",
+        ),
+        (SemiPBCOp.xor(0, target=0, terms=["c0"]), "target"),
+        (SemiPBCOp.xor(0, target="src0", terms=[0]), "xor term"),
+    ],
+)
+def test_validate_rejects_non_string_qubit_and_classical_fields(op, message):
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    with pytest.raises(ValueError, match=message):
         op.validate(header)
 
 

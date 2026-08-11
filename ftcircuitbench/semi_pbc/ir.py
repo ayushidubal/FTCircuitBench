@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,9 +50,9 @@ class SemiPBCHeader:
             raise ValueError("k must be an integer >= 1")
         if type(self.data_qubits) is not int or self.data_qubits < 0:
             raise ValueError("data_qubits must be a non-negative integer")
-        if self.format != "semi-pbc":
+        if not isinstance(self.format, str) or self.format != "semi-pbc":
             raise ValueError(f"unsupported semi-PBC format {self.format!r}")
-        if self.version != 1:
+        if type(self.version) is not int or self.version != 1:
             raise ValueError(f"unsupported semi-PBC version {self.version!r}")
 
     def to_record(self) -> dict[str, Any]:
@@ -226,6 +227,7 @@ class SemiPBCOp:
 
     def validate(self, header: SemiPBCHeader) -> None:
         _validate_op_id(self.id)
+        _validate_optional_schema_str(self.source_id, "source_id")
         if self.op in {"h", "s", "sdg"}:
             if len(self.qubits) != 1:
                 raise ValueError(f"{self.op} requires exactly one qubit")
@@ -279,17 +281,31 @@ def write_jsonl(
     path: str | Path, header: SemiPBCHeader, ops: Iterable[SemiPBCOp]
 ) -> None:
     output_path = Path(path)
+    temp_path: Path | None = None
     last_id: int | None = None
-    with output_path.open("w") as output:
-        output.write(_json_line(header.to_record()))
-        for op in ops:
-            op.validate(header)
-            if last_id is not None and op.id <= last_id:
-                raise ValueError(
-                    "operation ids must be strictly monotonically increasing"
-                )
-            last_id = op.id
-            output.write(_json_line(op.to_record()))
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as output:
+            temp_path = Path(output.name)
+            output.write(_json_line(header.to_record()))
+            for op in ops:
+                op.validate(header)
+                if last_id is not None and op.id <= last_id:
+                    raise ValueError(
+                        "operation ids must be strictly monotonically increasing"
+                    )
+                last_id = op.id
+                output.write(_json_line(op.to_record()))
+        temp_path.replace(output_path)
+    except BaseException:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
 
 
 def read_jsonl(path: str | Path) -> tuple[SemiPBCHeader, list[SemiPBCOp]]:
@@ -382,10 +398,20 @@ def _required_str(record: dict[str, Any], key: str) -> str:
 
 def _optional_str(record: dict[str, Any], key: str) -> str | None:
     value = record.get(key)
+    return _validate_optional_schema_str(value, key)
+
+
+def _validate_optional_schema_str(value: object, field: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError(f"{key} must be a string")
+        raise ValueError(f"{field} must be a string")
+    return value
+
+
+def _validate_schema_str(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
     return value
 
 
@@ -418,7 +444,8 @@ def _validate_op_id(op_id: int) -> None:
         raise ValueError("operation id must be a non-negative integer")
 
 
-def _validate_any_qubit(qubit: str, header: SemiPBCHeader) -> None:
+def _validate_any_qubit(qubit: object, header: SemiPBCHeader) -> None:
+    qubit = _validate_schema_str(qubit, "qubit")
     if _DATA_QUBIT_RE.fullmatch(qubit):
         _validate_data_qubit(qubit, header)
         return
@@ -427,7 +454,8 @@ def _validate_any_qubit(qubit: str, header: SemiPBCHeader) -> None:
     raise ValueError(f"unsupported qubit id {qubit!r}")
 
 
-def _validate_data_qubit(qubit: str, header: SemiPBCHeader) -> None:
+def _validate_data_qubit(qubit: object, header: SemiPBCHeader) -> None:
+    qubit = _validate_schema_str(qubit, "qubit")
     match = _DATA_QUBIT_RE.fullmatch(qubit)
     if match is None:
         raise ValueError(f"expected data qubit id q<N>, got {qubit!r}")
@@ -438,12 +466,14 @@ def _validate_data_qubit(qubit: str, header: SemiPBCHeader) -> None:
         )
 
 
-def _validate_ancilla_qubit(qubit: str) -> None:
+def _validate_ancilla_qubit(qubit: object) -> None:
+    qubit = _validate_schema_str(qubit, "qubit")
     if _ANCILLA_QUBIT_RE.fullmatch(qubit) is None:
         raise ValueError(f"expected ancilla qubit id a<N>, got {qubit!r}")
 
 
-def _validate_classical_id(classical_id: str, field: str) -> None:
+def _validate_classical_id(classical_id: object, field: str) -> None:
+    classical_id = _validate_schema_str(classical_id, field)
     if _CLASSICAL_RE.fullmatch(classical_id) is None:
         raise ValueError(f"{field} must be a classical id c<N> or src<N>")
 
