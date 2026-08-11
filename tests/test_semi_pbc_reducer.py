@@ -39,9 +39,9 @@ def test_reducer_normalizes_negative_replacement_sign_into_result_const():
 
 def test_reducer_uses_deterministic_tie_breaking():
     ops = [
-        src(0, "m_pauli", "+XXII"),
-        src(1, "m_pauli", "+YYII"),
-        src(2, "m_pauli", "+XXZI"),
+        src(0, "m_pauli", "+ZZI"),
+        src(1, "m_pauli", "+ZIZ"),
+        src(2, "m_pauli", "+ZZZ"),
     ]
     reduced = reduce_measurements(ops, greedy_order=1)
     assert reduced[2].used_source_ids == ("line0",)
@@ -79,7 +79,7 @@ def test_greedy_order_zero_only_considers_most_recent_eligible_measurement():
     ]
     reduced = reduce_measurements(ops, greedy_order=0)
     assert reduced[2].used_source_ids == ("line1",)
-    assert reduced[2].term.pairs == (("q2", "Z"), ("q3", "Z"))
+    assert reduced[2].term.pairs == (("q0", "Z"), ("q1", "Z"), ("q3", "Z"))
 
 
 def test_greedy_order_two_can_use_pair_when_singletons_do_not_help():
@@ -99,3 +99,45 @@ def test_greedy_order_two_can_use_pair_when_singletons_do_not_help():
 def test_reducer_rejects_invalid_greedy_order():
     with pytest.raises(ValueError, match="greedy_order"):
         reduce_measurements([src(0, "m_pauli", "+Z")], greedy_order=3)
+
+
+def test_reducer_uses_prior_representative_for_candidate_multiplication():
+    ops = [
+        src(0, "m_pauli", "+ZZI"),
+        src(1, "m_pauli", "+ZZZ"),
+        src(2, "t_pauli", "+XII"),
+        src(3, "m_pauli", "+ZZI"),
+    ]
+    reduced = reduce_measurements(ops, greedy_order=1)
+    assert reduced[1].term.pairs == (("q2", "Z"),)
+    assert reduced[3].used_source_ids == ()
+    assert reduced[3].term.pairs == (("q0", "Z"), ("q1", "Z"))
+
+
+def test_reducer_composes_result_terms_when_using_reduced_prior_representative():
+    ops = [
+        src(0, "m_pauli", "+IIX"),
+        src(1, "m_pauli", "+IXX"),
+        src(2, "m_pauli", "+XXI"),
+    ]
+    reduced = reduce_measurements(ops, greedy_order=1)
+    assert reduced[1].term.pairs == (("q1", "X"),)
+    assert reduced[1].result_terms == ("src0",)
+    assert reduced[2].term.pairs == (("q0", "X"),)
+    assert reduced[2].used_source_ids == ("line1",)
+    assert reduced[2].result_terms == ("src0", "src1")
+
+
+def test_reducer_composes_prior_result_const_when_mapping_representatives():
+    ops = [
+        src(0, "m_pauli", "+ZI"),
+        src(1, "m_pauli", "-ZZ"),
+        src(2, "t_pauli", "+XI"),
+        src(3, "m_pauli", "+ZZ"),
+    ]
+    reduced = reduce_measurements(ops, greedy_order=1)
+    assert reduced[1].result_const == 1
+    assert reduced[3].term.pairs == (("q0", "Z"),)
+    assert reduced[3].used_source_ids == ("line1",)
+    assert reduced[3].result_terms == ("src0", "src1")
+    assert reduced[3].result_const == 1

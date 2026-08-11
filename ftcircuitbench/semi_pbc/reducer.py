@@ -23,7 +23,6 @@ class ReducedSourceOp:
 class _PriorMeasurement:
     index: int
     op: ReducedSourceOp
-    source_term: PauliTerm
 
 
 @dataclass(frozen=True)
@@ -67,7 +66,6 @@ def reduce_measurements(
                 _PriorMeasurement(
                     index=index,
                     op=reduced_op,
-                    source_term=source_op.term,
                 )
             )
         reduced.append(reduced_op)
@@ -110,7 +108,7 @@ def _select_candidate(
     ]
     if not candidates:
         return None
-    return sorted(candidates, key=_candidate_sort_key)[0]
+    return min(candidates, key=_candidate_sort_key)
 
 
 def _candidate_prior_groups(
@@ -131,20 +129,41 @@ def _build_candidate(
     priors: tuple[_PriorMeasurement, ...],
 ) -> _Candidate | None:
     product = current_term
+    result_terms: set[str] = set()
+    result_const = 0
+
     for prior in priors:
         try:
-            product = product.multiply_real(prior.source_term)
+            product = product.multiply_real(prior.op.term)
         except ValueError:
             return None
+        _toggle_result_term(result_terms, f"src{prior.op.id}")
+        for result_term in prior.op.result_terms:
+            _toggle_result_term(result_terms, result_term)
+        result_const ^= prior.op.result_const
 
-    result_const = 1 if product.sign == -1 else 0
+    if product.sign == -1:
+        result_const ^= 1
     positive_term = PauliTerm.from_pairs(product.pairs, sign=1)
     return _Candidate(
         term=positive_term,
-        result_terms=tuple(f"src{prior.op.id}" for prior in priors),
+        result_terms=tuple(sorted(result_terms, key=_result_term_sort_key)),
         result_const=result_const,
         used_source_ids=tuple(prior.op.source_id for prior in priors),
     )
+
+
+def _toggle_result_term(result_terms: set[str], result_term: str) -> None:
+    if result_term in result_terms:
+        result_terms.remove(result_term)
+    else:
+        result_terms.add(result_term)
+
+
+def _result_term_sort_key(result_term: str) -> tuple[int, int, str]:
+    if result_term.startswith("src") and result_term[3:].isdigit():
+        return (0, int(result_term[3:]), "")
+    return (1, 0, result_term)
 
 
 def _candidate_sort_key(
