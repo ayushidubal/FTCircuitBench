@@ -190,6 +190,29 @@ def test_write_jsonl_rejects_non_string_source_id(tmp_path):
         write_jsonl(tmp_path / "bad_source_id.jsonl", header, [op])
 
 
+def test_write_jsonl_rejects_runtime_pauli_term_with_invalid_label(tmp_path):
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    op = SemiPBCOp.pauli_rotation(0, PauliTerm((("q0", "A"),), sign=1))
+
+    with pytest.raises(ValueError, match="Pauli"):
+        write_jsonl(tmp_path / "bad_pauli_label.jsonl", header, [op])
+
+
+@pytest.mark.parametrize(
+    ("op", "message"),
+    [
+        (SemiPBCOp(0, [], qubits=("q0",)), "op"),
+        (SemiPBCOp(0, "h", qubits=("q0", 0)), "qubits"),
+        (SemiPBCOp(0, "xor", target="c0", terms=None), "terms"),
+        (SemiPBCOp(0, "xor", target="c0", terms=("c0", 0)), "terms"),
+    ],
+)
+def test_validate_rejects_runtime_container_type_mismatches(op, message):
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    with pytest.raises(ValueError, match=message):
+        op.validate(header)
+
+
 def test_pauli_op_rejects_weight_above_k_when_validated():
     header = SemiPBCHeader(k=1, data_qubits=2)
     op = SemiPBCOp.pauli_rotation(0, PauliTerm.from_pairs([("q0", "Z"), ("q1", "Z")]))

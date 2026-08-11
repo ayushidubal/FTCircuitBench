@@ -228,53 +228,58 @@ class SemiPBCOp:
     def validate(self, header: SemiPBCHeader) -> None:
         _validate_op_id(self.id)
         _validate_optional_schema_str(self.source_id, "source_id")
-        if self.op in {"h", "s", "sdg"}:
-            if len(self.qubits) != 1:
-                raise ValueError(f"{self.op} requires exactly one qubit")
-            _validate_any_qubit(self.qubits[0], header)
+        op = _validate_schema_str(self.op, "op")
+        if op in {"h", "s", "sdg"}:
+            qubits = _validate_schema_str_sequence(self.qubits, "qubits", "qubit")
+            if len(qubits) != 1:
+                raise ValueError(f"{op} requires exactly one qubit")
+            _validate_any_qubit(qubits[0], header)
             return
-        if self.op == "cx":
-            if len(self.qubits) != 2:
+        if op == "cx":
+            qubits = _validate_schema_str_sequence(self.qubits, "qubits", "qubit")
+            if len(qubits) != 2:
                 raise ValueError("cx requires exactly two qubits")
-            for qubit in self.qubits:
+            for qubit in qubits:
                 _validate_any_qubit(qubit, header)
             return
-        if self.op == "alloc":
+        if op == "alloc":
             if self.qubit is None:
                 raise ValueError("alloc requires one ancilla qubit")
             _validate_ancilla_qubit(self.qubit)
-            if self.basis != "zero":
+            basis = _validate_schema_str(self.basis, "basis")
+            if basis != "zero":
                 raise ValueError("alloc basis must be 'zero'")
             return
-        if self.op == "release":
+        if op == "release":
             if self.qubit is None:
                 raise ValueError("release requires one ancilla qubit")
             _validate_ancilla_qubit(self.qubit)
             return
-        if self.op == "t_pauli":
+        if op == "t_pauli":
             angle_num = _validate_schema_int(self.angle_num, "angle_num")
             angle_den = _validate_schema_int(self.angle_den, "angle_den")
             if angle_num != 1 or angle_den != 8:
                 raise ValueError("t_pauli requires angle_num=1 and angle_den=8")
             _validate_pauli_term(self.term, header, "t_pauli")
             return
-        if self.op == "m_pauli":
+        if op == "m_pauli":
             if self.result is None:
                 raise ValueError("m_pauli requires result")
             _validate_classical_id(self.result, "result")
             _validate_pauli_term(self.term, header, "m_pauli")
             return
-        if self.op == "xor":
+        if op == "xor":
             if self.target is None:
                 raise ValueError("xor requires target")
             _validate_classical_id(self.target, "target")
-            for term in self.terms:
+            terms = _validate_schema_str_sequence(self.terms, "terms", "xor term")
+            for term in terms:
                 _validate_classical_id(term, "xor term")
             const = _validate_schema_int(self.const, "xor const")
             if const not in {0, 1}:
                 raise ValueError("xor const must be 0 or 1")
             return
-        raise ValueError(f"unsupported semi-PBC operation {self.op!r}")
+        raise ValueError(f"unsupported semi-PBC operation {op!r}")
 
 
 def write_jsonl(
@@ -415,6 +420,16 @@ def _validate_schema_str(value: object, field: str) -> str:
     return value
 
 
+def _validate_schema_str_sequence(
+    value: object, field: str, item_name: str
+) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(item, str) for item in value
+    ):
+        raise ValueError(f"{field} must be a list or tuple of {item_name} strings")
+    return tuple(value)
+
+
 def _required_str_list(record: dict[str, Any], key: str) -> tuple[str, ...]:
     value = record.get(key)
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -483,6 +498,8 @@ def _validate_pauli_term(
 ) -> None:
     if term is None:
         raise ValueError(f"{op_name} requires term")
+    if not isinstance(term, PauliTerm):
+        raise ValueError(f"{op_name} requires PauliTerm")
     sign = _validate_schema_int(term.sign, f"{op_name} sign")
     if sign not in {1, -1}:
         raise ValueError(f"{op_name} sign must be 1 or -1")
@@ -492,5 +509,8 @@ def _validate_pauli_term(
         raise ValueError(
             f"{op_name} Pauli term weight {term.weight} exceeds k={header.k}"
         )
-    for qubit, _pauli in term.pairs:
+    for qubit, pauli in term.pairs:
         _validate_any_qubit(qubit, header)
+        pauli = _validate_schema_str(pauli, f"{op_name} Pauli label")
+        if pauli not in {"X", "Y", "Z"}:
+            raise ValueError(f"{op_name} Pauli label must be X, Y, or Z")
