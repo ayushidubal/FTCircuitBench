@@ -249,6 +249,23 @@ def test_validate_rejects_runtime_container_type_mismatches(op, message):
         op.validate(header)
 
 
+@pytest.mark.parametrize(
+    ("op", "message"),
+    [
+        (SemiPBCOp(0, "h", qubits=("q0",), target="src0"), "target.*h"),
+        (SemiPBCOp(0, "release", qubit="a0", basis="zero"), "basis.*release"),
+        (
+            SemiPBCOp(0, "xor", target="src0", terms=("c0",), qubit="a0"),
+            "qubit.*xor",
+        ),
+    ],
+)
+def test_validate_rejects_irrelevant_runtime_fields(op, message):
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    with pytest.raises(ValueError, match=message):
+        op.validate(header)
+
+
 def test_pauli_op_rejects_weight_above_k_when_validated():
     header = SemiPBCHeader(k=1, data_qubits=2)
     op = SemiPBCOp.pauli_rotation(0, PauliTerm.from_pairs([("q0", "Z"), ("q1", "Z")]))

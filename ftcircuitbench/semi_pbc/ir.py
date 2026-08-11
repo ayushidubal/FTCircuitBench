@@ -37,6 +37,29 @@ _OP_FIELDS = {
     "m_pauli": {"id", "op", "terms", "sign", "result", "source_id"},
     "xor": {"id", "op", "target", "terms", "const", "source_id"},
 }
+_OP_RUNTIME_FIELDS = {
+    "h": {"qubits"},
+    "s": {"qubits"},
+    "sdg": {"qubits"},
+    "cx": {"qubits"},
+    "alloc": {"qubit", "basis"},
+    "release": {"qubit"},
+    "t_pauli": {"term", "angle_num", "angle_den"},
+    "m_pauli": {"term", "result"},
+    "xor": {"target", "terms", "const"},
+}
+_RUNTIME_FIELD_DEFAULTS = {
+    "qubits": (),
+    "qubit": None,
+    "basis": None,
+    "term": None,
+    "result": None,
+    "target": None,
+    "terms": (),
+    "const": 0,
+    "angle_num": None,
+    "angle_den": None,
+}
 
 
 @dataclass(frozen=True)
@@ -230,6 +253,7 @@ class SemiPBCOp:
         _validate_op_id(self.id)
         _validate_optional_schema_str(self.source_id, "source_id")
         op = _validate_schema_str(self.op, "op")
+        _reject_irrelevant_runtime_fields(self, op)
         if op in {"h", "s", "sdg"}:
             qubits = _validate_schema_str_sequence(self.qubits, "qubits", "qubit")
             if len(qubits) != 1:
@@ -382,6 +406,22 @@ def _reject_unknown_fields(
     unknown = sorted(set(record) - allowed)
     if unknown:
         raise ValueError(f"unknown field(s) for {schema}: {', '.join(unknown)}")
+
+
+def _reject_irrelevant_runtime_fields(op: SemiPBCOp, op_name: str) -> None:
+    allowed = _OP_RUNTIME_FIELDS.get(op_name)
+    if allowed is None:
+        return
+    for field, default in _RUNTIME_FIELD_DEFAULTS.items():
+        if field in allowed:
+            continue
+        value = getattr(op, field)
+        if not _is_runtime_default(value, default):
+            raise ValueError(f"{field} is not valid for {op_name} operation")
+
+
+def _is_runtime_default(value: object, default: object) -> bool:
+    return type(value) is type(default) and value == default
 
 
 def _required_int(record: dict[str, Any], key: str) -> int:
