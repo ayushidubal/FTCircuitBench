@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 PauliPair = tuple[str, str]
 _QUBIT_ID_RE = re.compile(r"([qa])([0-9]+)\Z")
+_PAULI_LABELS = {"X", "Y", "Z"}
 
 _SINGLE_PRODUCT = {
     ("X", "X"): (None, 0),
@@ -38,11 +39,52 @@ def _qubit_sort_key(name: str) -> tuple[int, int]:
     return (0 if prefix == "q" else 1, idx)
 
 
+def _normalize_pairs(
+    pairs: Iterable[PauliPair], *, sign: int, source_id: str | None
+) -> tuple[PauliPair, ...]:
+    if type(sign) is not int or sign not in {1, -1}:
+        raise ValueError(f"unsupported sign {sign!r}")
+    if source_id is not None and not isinstance(source_id, str):
+        raise ValueError("source_id must be a string")
+    if not isinstance(pairs, Iterable) or isinstance(pairs, (str, bytes)):
+        raise ValueError(  # noqa: TRY004
+            "Pauli terms must be an iterable of Pauli pairs"
+        )
+
+    seen: set[tuple[str, int]] = set()
+    cleaned: list[PauliPair] = []
+    for pair in pairs:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError("Pauli terms must contain 2-item Pauli pairs")
+        qubit, pauli = pair
+        if not isinstance(qubit, str):
+            raise ValueError("qubit id must be a string")  # noqa: TRY004
+        if not isinstance(pauli, str):
+            raise ValueError("Pauli label must be a string")  # noqa: TRY004
+        if pauli == "I":
+            continue
+        if pauli not in _PAULI_LABELS:
+            raise ValueError(f"unsupported Pauli {pauli!r}")
+        qubit_key = _parse_qubit_id(qubit)
+        if qubit_key in seen:
+            raise ValueError(f"duplicate Pauli entry for qubit {qubit!r}")
+        seen.add(qubit_key)
+        cleaned.append((qubit, pauli))
+    return tuple(sorted(cleaned, key=lambda item: _qubit_sort_key(item[0])))
+
+
 @dataclass(frozen=True)
 class PauliTerm:
     pairs: tuple[PauliPair, ...]
     sign: int = 1
-    source_id: str | None = None
+    source_id: str | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "pairs",
+            _normalize_pairs(self.pairs, sign=self.sign, source_id=self.source_id),
+        )
 
     @classmethod
     def from_pairs(
@@ -52,25 +94,7 @@ class PauliTerm:
         sign: int = 1,
         source_id: str | None = None,
     ) -> PauliTerm:
-        if sign not in {1, -1}:
-            raise ValueError(f"unsupported sign {sign!r}")
-        seen: set[str] = set()
-        cleaned: list[PauliPair] = []
-        for qubit, pauli in pairs:
-            if pauli == "I":
-                continue
-            if pauli not in {"X", "Y", "Z"}:
-                raise ValueError(f"unsupported Pauli {pauli!r}")
-            if qubit in seen:
-                raise ValueError(f"duplicate Pauli entry for qubit {qubit!r}")
-            _qubit_sort_key(qubit)
-            seen.add(qubit)
-            cleaned.append((qubit, pauli))
-        return cls(
-            tuple(sorted(cleaned, key=lambda item: _qubit_sort_key(item[0]))),
-            sign,
-            source_id,
-        )
+        return cls(pairs, sign, source_id)
 
     @classmethod
     def from_full_width(

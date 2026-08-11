@@ -15,7 +15,8 @@ from ftcircuitbench.semi_pbc.pauli import PauliTerm
 _INDEXED_SUFFIX = r"(?:0|[1-9][0-9]*)"
 _DATA_QUBIT_RE = re.compile(rf"q({_INDEXED_SUFFIX})\Z")
 _ANCILLA_QUBIT_RE = re.compile(rf"a({_INDEXED_SUFFIX})\Z")
-_CLASSICAL_RE = re.compile(rf"(?:c|src)({_INDEXED_SUFFIX})\Z")
+_PHYSICAL_CLASSICAL_RE = re.compile(rf"c({_INDEXED_SUFFIX})\Z")
+_SOURCE_CLASSICAL_RE = re.compile(rf"src({_INDEXED_SUFFIX})\Z")
 _CLIFFORD_OPS = {"h", "s", "sdg", "cx"}
 _HEADER_FIELDS = {"format", "version", "k", "data_qubits"}
 _OP_FIELDS = {
@@ -290,16 +291,16 @@ class SemiPBCOp:
         if op == "m_pauli":
             if self.result is None:
                 raise ValueError("m_pauli requires result")
-            _validate_classical_id(self.result, "result")
+            _validate_physical_classical_id(self.result, "result")
             _validate_pauli_term(self.term, header, "m_pauli")
             return
         if op == "xor":
             if self.target is None:
                 raise ValueError("xor requires target")
-            _validate_classical_id(self.target, "target")
+            _validate_source_classical_id(self.target, "target")
             terms = _validate_schema_str_sequence(self.terms, "terms", "xor term")
             for term in terms:
-                _validate_classical_id(term, "xor term")
+                _validate_classical_input_id(term, "xor term")
             const = _validate_schema_int(self.const, "xor const")
             if const not in {0, 1}:
                 raise ValueError("xor const must be 0 or 1")
@@ -528,9 +529,24 @@ def _validate_ancilla_qubit(qubit: object) -> None:
         raise ValueError(f"expected ancilla qubit id a<N>, got {qubit!r}")
 
 
-def _validate_classical_id(classical_id: object, field: str) -> None:
+def _validate_physical_classical_id(classical_id: object, field: str) -> None:
     classical_id = _validate_schema_str(classical_id, field)
-    if _CLASSICAL_RE.fullmatch(classical_id) is None:
+    if _PHYSICAL_CLASSICAL_RE.fullmatch(classical_id) is None:
+        raise ValueError(f"{field} must be a physical classical id c<N>")
+
+
+def _validate_source_classical_id(classical_id: object, field: str) -> None:
+    classical_id = _validate_schema_str(classical_id, field)
+    if _SOURCE_CLASSICAL_RE.fullmatch(classical_id) is None:
+        raise ValueError(f"{field} must be a source classical id src<N>")
+
+
+def _validate_classical_input_id(classical_id: object, field: str) -> None:
+    classical_id = _validate_schema_str(classical_id, field)
+    if (
+        _PHYSICAL_CLASSICAL_RE.fullmatch(classical_id) is None
+        and _SOURCE_CLASSICAL_RE.fullmatch(classical_id) is None
+    ):
         raise ValueError(f"{field} must be a classical id c<N> or src<N>")
 
 

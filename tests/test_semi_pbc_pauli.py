@@ -11,6 +11,23 @@ def test_pauli_term_canonicalizes_data_then_ancilla():
     assert term.weight == 4
 
 
+def test_pauli_term_equality_ignores_source_id_but_preserves_metadata():
+    left = PauliTerm.from_pairs([("q0", "Z")], source_id="source-a")
+    right = PauliTerm.from_pairs([("q0", "Z")], source_id="source-b")
+
+    assert left == right
+    assert hash(left) == hash(right)
+    assert left.source_id == "source-a"
+    assert right.source_id == "source-b"
+
+
+def test_direct_pauli_term_construction_canonicalizes_pairs():
+    term = PauliTerm((("a1", "X"), ("q2", "Z"), ("q0", "I"), ("q1", "Y")))
+
+    assert term.pairs == (("q1", "Y"), ("q2", "Z"), ("a1", "X"))
+    assert term.sign == 1
+
+
 def test_pauli_term_rejects_duplicate_non_identity_qubit():
     with pytest.raises(ValueError, match="duplicate"):
         PauliTerm.from_pairs([("q0", "X"), ("q0", "Z")])
@@ -20,6 +37,26 @@ def test_pauli_term_rejects_duplicate_non_identity_qubit():
 def test_pauli_term_rejects_leading_zero_qubit_ids(qubit):
     with pytest.raises(ValueError, match="leading zero|unsupported qubit"):
         PauliTerm.from_pairs([(qubit, "Z")])
+
+
+@pytest.mark.parametrize(
+    ("factory", "message"),
+    [
+        (lambda: PauliTerm.from_pairs([("q0", "Z")], sign=True), "sign"),
+        (lambda: PauliTerm((("q0", "Z"),), sign=True), "sign"),
+        (lambda: PauliTerm((("q0", "A"),), sign=1), "Pauli"),
+        (lambda: PauliTerm(((0, "Z"),), sign=1), "qubit"),
+        (lambda: PauliTerm((("q0", 0),), sign=1), "Pauli"),
+        (lambda: PauliTerm((1,), sign=1), "pair"),
+        (lambda: PauliTerm(None, sign=1), "terms"),
+        (lambda: PauliTerm((("q0", "X"), ("q0", "Z")), sign=1), "duplicate"),
+        (lambda: PauliTerm((("q01", "Z"),), sign=1), "leading zero|qubit"),
+        (lambda: PauliTerm((("q0", "Z"),), sign=1, source_id=1), "source_id"),
+    ],
+)
+def test_pauli_term_rejects_invalid_construction(factory, message):
+    with pytest.raises(ValueError, match=message):
+        factory()
 
 
 def test_full_width_conversion_omits_identity_in_sparse_form():

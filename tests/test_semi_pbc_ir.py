@@ -201,37 +201,28 @@ def test_write_jsonl_rejects_non_string_source_id(tmp_path):
         write_jsonl(tmp_path / "bad_source_id.jsonl", header, [op])
 
 
-def test_write_jsonl_rejects_runtime_pauli_term_with_invalid_label(tmp_path):
-    header = SemiPBCHeader(k=1, data_qubits=1)
-    op = SemiPBCOp.pauli_rotation(0, PauliTerm((("q0", "A"),), sign=1))
-
+def test_pauli_term_invalid_label_is_rejected_before_jsonl_write():
     with pytest.raises(ValueError, match="Pauli"):
-        write_jsonl(tmp_path / "bad_pauli_label.jsonl", header, [op])
+        PauliTerm((("q0", "A"),), sign=1)
 
 
 @pytest.mark.parametrize(
-    ("term", "message"),
+    ("factory", "message"),
     [
-        (PauliTerm((1,), sign=1), "pair"),
-        (PauliTerm(None, sign=1), "terms"),
-        (PauliTerm((("q0", "X"), ("q0", "Z")), sign=1), "duplicate"),
+        (lambda: PauliTerm((1,), sign=1), "pair"),
+        (lambda: PauliTerm(None, sign=1), "terms"),
+        (lambda: PauliTerm((("q0", "X"), ("q0", "Z")), sign=1), "duplicate"),
     ],
 )
-def test_validate_rejects_malformed_runtime_pauli_term_pairs(term, message):
-    header = SemiPBCHeader(k=2, data_qubits=1)
-    op = SemiPBCOp.pauli_rotation(0, term)
-
+def test_pauli_term_constructor_rejects_malformed_pairs(factory, message):
     with pytest.raises(ValueError, match=message):
-        op.validate(header)
+        factory()
 
 
 @pytest.mark.parametrize("qubit", ["q01", "a01"])
 def test_validate_rejects_runtime_pauli_term_leading_zero_qubits(qubit):
-    header = SemiPBCHeader(k=1, data_qubits=2)
-    op = SemiPBCOp.pauli_rotation(0, PauliTerm(((qubit, "Z"),), sign=1))
-
     with pytest.raises(ValueError, match="leading zero|qubit"):
-        op.validate(header)
+        PauliTerm(((qubit, "Z"),), sign=1)
 
 
 @pytest.mark.parametrize(
@@ -239,8 +230,8 @@ def test_validate_rejects_runtime_pauli_term_leading_zero_qubits(qubit):
     [
         (SemiPBCOp(0, [], qubits=("q0",)), "op"),
         (SemiPBCOp(0, "h", qubits=("q0", 0)), "qubits"),
-        (SemiPBCOp(0, "xor", target="c0", terms=None), "terms"),
-        (SemiPBCOp(0, "xor", target="c0", terms=("c0", 0)), "terms"),
+        (SemiPBCOp(0, "xor", target="src0", terms=None), "terms"),
+        (SemiPBCOp(0, "xor", target="src0", terms=("c0", 0)), "terms"),
     ],
 )
 def test_validate_rejects_runtime_container_type_mismatches(op, message):
@@ -286,10 +277,6 @@ def test_pauli_op_rejects_data_qubit_outside_header_width():
         (SemiPBCOp.clifford(0, "h", (0,)), "qubit"),
         (SemiPBCOp.alloc(0, 0), "qubit"),
         (SemiPBCOp.release(0, 0), "qubit"),
-        (
-            SemiPBCOp.pauli_rotation(0, PauliTerm(((0, "Z"),))),
-            "qubit",
-        ),
         (
             SemiPBCOp.measurement(0, PauliTerm.from_pairs([("q0", "Z")]), result=0),
             "result",
@@ -338,18 +325,6 @@ def test_validate_rejects_non_string_qubit_and_classical_fields(op, message):
             SemiPBCOp(0, "m_pauli", term=PauliTerm.from_pairs([("q0", "Z")])),
             "result",
         ),
-        (
-            SemiPBCOp.pauli_rotation(0, PauliTerm((("q0", "Z"),), sign=0)),
-            "sign",
-        ),
-        (
-            SemiPBCOp.pauli_rotation(0, PauliTerm((("q0", "Z"),), sign=True)),
-            "integer",
-        ),
-        (
-            SemiPBCOp.measurement(0, PauliTerm((("q0", "Z"),), sign=0), result="c0"),
-            "sign",
-        ),
         (SemiPBCOp.pauli_rotation(0, PauliTerm.from_pairs([])), "weight"),
         (
             SemiPBCOp.measurement(0, PauliTerm.from_pairs([("q0", "Z")]), result="m0"),
@@ -373,3 +348,26 @@ def test_validate_rejects_malformed_operation_branches(op, message):
     header = SemiPBCHeader(k=1, data_qubits=2)
     with pytest.raises(ValueError, match=message):
         op.validate(header)
+
+
+def test_measurement_result_requires_physical_classical_id():
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    op = SemiPBCOp.measurement(0, PauliTerm.from_pairs([("q0", "Z")]), result="src0")
+
+    with pytest.raises(ValueError, match="physical|c<N>|result"):
+        op.validate(header)
+
+
+def test_xor_target_requires_source_classical_id():
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    op = SemiPBCOp.xor(0, target="c0", terms=("c0",))
+
+    with pytest.raises(ValueError, match="source|src<N>|target"):
+        op.validate(header)
+
+
+def test_xor_allows_physical_and_source_inputs():
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    op = SemiPBCOp.xor(0, target="src0", terms=("c0", "src1"))
+
+    op.validate(header)
