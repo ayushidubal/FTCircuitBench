@@ -115,6 +115,12 @@ class SemiPBCOp:
     angle_den: int | None = None
     source_id: str | None = None
 
+    def __post_init__(self) -> None:
+        if _is_schema_str_sequence(self.qubits):
+            object.__setattr__(self, "qubits", tuple(self.qubits))
+        if _is_schema_str_sequence(self.terms):
+            object.__setattr__(self, "terms", tuple(self.terms))
+
     @classmethod
     def clifford(
         cls, id: int, op: str, qubits: Iterable[str], source_id: str | None = None
@@ -402,6 +408,8 @@ def _validate_runtime_shape(op: SemiPBCOp) -> str:
             raise ValueError("cx requires exactly two qubits")
         for qubit in qubits:
             _validate_any_qubit_id_shape(qubit)
+        if qubits[0] == qubits[1]:
+            raise ValueError("cx requires two distinct qubits")
         return op_name
     if op_name == "alloc":
         if op.qubit is None:
@@ -487,11 +495,15 @@ def _validate_schema_str(value: object, field: str) -> str:
 def _validate_schema_str_sequence(
     value: object, field: str, item_name: str
 ) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)) or not all(
-        isinstance(item, str) for item in value
-    ):
+    if not _is_schema_str_sequence(value):
         raise ValueError(f"{field} must be a list or tuple of {item_name} strings")
     return tuple(value)
+
+
+def _is_schema_str_sequence(value: object) -> bool:
+    return isinstance(value, (list, tuple)) and all(
+        isinstance(item, str) for item in value
+    )
 
 
 def _required_str_list(record: dict[str, Any], key: str) -> tuple[str, ...]:

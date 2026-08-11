@@ -46,6 +46,28 @@ def test_jsonl_round_trip_preserves_non_pauli_source_ids(tmp_path):
     assert read_jsonl(path) == (header, ops)
 
 
+def test_direct_clifford_list_qubits_canonicalize_and_round_trip(tmp_path):
+    path = tmp_path / "direct_clifford.semi_pbc.jsonl"
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    op = SemiPBCOp(0, "h", qubits=["q0"])
+
+    assert op.qubits == ("q0",)
+
+    write_jsonl(path, header, [op])
+    assert read_jsonl(path) == (header, [op])
+
+
+def test_direct_xor_list_terms_canonicalize_and_round_trip(tmp_path):
+    path = tmp_path / "direct_xor.semi_pbc.jsonl"
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    op = SemiPBCOp(0, "xor", target="src0", terms=["c0"])
+
+    assert op.terms == ("c0",)
+
+    write_jsonl(path, header, [op])
+    assert read_jsonl(path) == (header, [op])
+
+
 def test_write_jsonl_rejects_non_monotonic_ids(tmp_path):
     header = SemiPBCHeader(k=1, data_qubits=1)
     ops = [
@@ -423,6 +445,7 @@ def test_validate_rejects_non_string_qubit_and_classical_fields(op, message):
         (SemiPBCOp.clifford(0, "h", ()), "one qubit"),
         (SemiPBCOp.clifford(0, "s", ("q0", "q1")), "one qubit"),
         (SemiPBCOp.clifford(0, "cx", ("q0",)), "two qubits"),
+        (SemiPBCOp.clifford(0, "cx", ("q0", "q0")), "distinct|duplicate"),
         (SemiPBCOp.alloc(0, "q0"), "ancilla"),
         (SemiPBCOp.alloc(0, "a0", basis="plus"), "basis"),
         (SemiPBCOp.release(0, "q0"), "ancilla"),
