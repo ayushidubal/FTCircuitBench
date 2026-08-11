@@ -86,6 +86,35 @@ def test_read_jsonl_rejects_unsupported_operation_record(tmp_path):
         read_jsonl(path)
 
 
+def test_read_jsonl_rejects_unknown_operation_field(tmp_path):
+    path = tmp_path / "bad.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n'
+        '{"id":0,"op":"h","qubits":["q0"],"extra":true}\n'
+    )
+    with pytest.raises(ValueError, match="unknown|unexpected"):
+        read_jsonl(path)
+
+
+def test_write_jsonl_streams_records_from_iterator(tmp_path):
+    path = tmp_path / "streamed.semi_pbc.jsonl"
+    header = SemiPBCHeader(k=1, data_qubits=1)
+
+    def ops():
+        yield SemiPBCOp.clifford(0, "h", ("q0",))
+        raise RuntimeError("iterator stopped after first op")
+
+    with pytest.raises(RuntimeError, match="iterator stopped"):
+        write_jsonl(path, header, ops())
+
+    assert path.exists()
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert rows == [
+        {"format": "semi-pbc", "version": 1, "k": 1, "data_qubits": 1},
+        {"id": 0, "op": "h", "qubits": ["q0"]},
+    ]
+
+
 def test_header_rejects_invalid_k():
     with pytest.raises(ValueError, match="k"):
         SemiPBCHeader(k=0, data_qubits=3)

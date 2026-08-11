@@ -15,6 +15,25 @@ _DATA_QUBIT_RE = re.compile(r"q([0-9]+)\Z")
 _ANCILLA_QUBIT_RE = re.compile(r"a([0-9]+)\Z")
 _CLASSICAL_RE = re.compile(r"(?:c|src)([0-9]+)\Z")
 _CLIFFORD_OPS = {"h", "s", "sdg", "cx"}
+_OP_FIELDS = {
+    "h": {"id", "op", "qubits", "source_id"},
+    "s": {"id", "op", "qubits", "source_id"},
+    "sdg": {"id", "op", "qubits", "source_id"},
+    "cx": {"id", "op", "qubits", "source_id"},
+    "alloc": {"id", "op", "qubit", "basis", "source_id"},
+    "release": {"id", "op", "qubit", "source_id"},
+    "t_pauli": {
+        "id",
+        "op",
+        "terms",
+        "sign",
+        "angle_num",
+        "angle_den",
+        "source_id",
+    },
+    "m_pauli": {"id", "op", "terms", "sign", "result", "source_id"},
+    "xor": {"id", "op", "target", "terms", "const", "source_id"},
+}
 
 
 @dataclass(frozen=True)
@@ -160,6 +179,7 @@ class SemiPBCOp:
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> SemiPBCOp:
         op = _required_str(record, "op")
+        _reject_unknown_fields(record, op)
         id = _required_int(record, "id")
         source_id = _optional_str(record, "source_id")
         if op in _CLIFFORD_OPS:
@@ -254,17 +274,17 @@ def write_jsonl(
     path: str | Path, header: SemiPBCHeader, ops: Iterable[SemiPBCOp]
 ) -> None:
     output_path = Path(path)
-    records: list[dict[str, Any]] = [header.to_record()]
     last_id: int | None = None
-    for op in ops:
-        op.validate(header)
-        if last_id is not None and op.id <= last_id:
-            raise ValueError("operation ids must be strictly monotonically increasing")
-        last_id = op.id
-        records.append(op.to_record())
-    output_path.write_text(
-        "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records)
-    )
+    with output_path.open("w") as output:
+        output.write(_json_line(header.to_record()))
+        for op in ops:
+            op.validate(header)
+            if last_id is not None and op.id <= last_id:
+                raise ValueError(
+                    "operation ids must be strictly monotonically increasing"
+                )
+            last_id = op.id
+            output.write(_json_line(op.to_record()))
 
 
 def read_jsonl(path: str | Path) -> tuple[SemiPBCHeader, list[SemiPBCOp]]:
@@ -295,6 +315,19 @@ def _json_record(line: str, line_number: int) -> dict[str, Any]:
     if not isinstance(record, dict):
         raise ValueError(f"expected JSON object on line {line_number}")
     return record
+
+
+def _json_line(record: dict[str, Any]) -> str:
+    return json.dumps(record, separators=(",", ":")) + "\n"
+
+
+def _reject_unknown_fields(record: dict[str, Any], op: str) -> None:
+    allowed = _OP_FIELDS.get(op)
+    if allowed is None:
+        return
+    unknown = sorted(set(record) - allowed)
+    if unknown:
+        raise ValueError(f"unknown field(s) for {op}: {', '.join(unknown)}")
 
 
 def _required_int(record: dict[str, Any], key: str) -> int:
