@@ -10,6 +10,10 @@ _PBC_OP_RE = re.compile(
     r"\A(?P<op>t_pauli|m_pauli)\s+(?P<pauli>[+-][IXYZ]+)\s*;\Z"
 )
 _QREG_RE = re.compile(r"\Aqreg\s+q\[(?P<data_qubits>0|[1-9][0-9]*)\]\s*;\Z")
+_BOILERPLATE_RE = re.compile(
+    r'\A(?:OPENQASM\s+[0-9]+(?:\.[0-9]+)?|include\s+"[^"]+"|'
+    r"creg\s+[A-Za-z_][A-Za-z0-9_]*\[(?:0|[1-9][0-9]*)\])\s*;\Z"
+)
 _PBC_OP_START_RE = re.compile(r"\A(?P<op>t_pauli|m_pauli)\b")
 _QREG_START_RE = re.compile(r"\Aqreg\b")
 
@@ -83,7 +87,7 @@ def parse_pbc_text(text: str) -> PBCProgram:
 
 
 def parse_pbc_file(path: str | Path) -> PBCProgram:
-    return parse_pbc_text(Path(path).read_text())
+    return parse_pbc_text(Path(path).read_text(encoding="utf-8"))
 
 
 def _strip_comment(line: str) -> str:
@@ -91,4 +95,4 @@ def _strip_comment(line: str) -> str:
 
 
 def _is_skipped_statement(line: str) -> bool:
-    return line.startswith(("OPENQASM", "include", "creg"))
+    return _BOILERPLATE_RE.fullmatch(line) is not None

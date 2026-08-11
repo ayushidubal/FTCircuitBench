@@ -37,6 +37,31 @@ def test_parse_rejects_malformed_sign():
         parse_pbc_text("qreg q[1];\nt_pauli *Z;\n")
 
 
+@pytest.mark.parametrize(
+    "statement",
+    [
+        'include_bad "qelib1.inc";',
+        "cregister c[1];",
+        "OPENQASM_BAD 2.0;",
+    ],
+)
+def test_parse_rejects_malformed_boilerplate_prefix_lookalikes(statement):
+    text = f"qreg q[1];\n{statement}\nt_pauli +Z;\n"
+    with pytest.raises(ValueError, match="unsupported"):
+        parse_pbc_text(text)
+
+
+def test_parse_rejects_generic_unsupported_operator():
+    with pytest.raises(ValueError, match="unsupported"):
+        parse_pbc_text("qreg q[1];\nh q[0];\n")
+
+
+@pytest.mark.parametrize("statement", ["qreg r[1];", "qreg q[2]"])
+def test_parse_rejects_malformed_qreg(statement):
+    with pytest.raises(ValueError, match="qreg"):
+        parse_pbc_text(f"{statement}\n")
+
+
 def test_parse_pbc_file_reads_path(tmp_path):
     path = tmp_path / "toy.pbc"
     path.write_text("qreg q[1];\nt_pauli +Z;\n")
