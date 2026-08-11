@@ -119,6 +119,8 @@ class PauliTerm:
         return len(self.pairs)
 
     def to_full_width(self, data_qubits: int) -> str:
+        if type(data_qubits) is not int or data_qubits < 0:
+            raise ValueError("data_qubits must be a non-negative integer")
         chars = ["I"] * data_qubits
         for qubit, pauli in self.pairs:
             prefix, idx = _parse_qubit_id(qubit)

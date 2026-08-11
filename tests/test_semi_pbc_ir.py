@@ -279,6 +279,109 @@ def test_validate_rejects_irrelevant_runtime_fields(op, message):
         op.validate(header)
 
 
+@pytest.mark.parametrize(
+    ("op", "message"),
+    [
+        (SemiPBCOp(0, "h", qubits=("q0",), target="src0"), "target.*h"),
+        (SemiPBCOp(0, "release", qubit="a0", basis="zero"), "basis.*release"),
+        (
+            SemiPBCOp(0, "xor", target="src0", terms=("c0",), qubit="a0"),
+            "qubit.*xor",
+        ),
+    ],
+)
+def test_to_record_rejects_irrelevant_runtime_fields(op, message):
+    with pytest.raises(ValueError, match=message):
+        op.to_record()
+
+
+@pytest.mark.parametrize(
+    ("op", "message"),
+    [
+        (SemiPBCOp(0, [], qubits=("q0",)), "op"),
+        (SemiPBCOp(0, "h", qubits=("q0", 0)), "qubits"),
+        (SemiPBCOp(0, "h", qubits=()), "one qubit"),
+        (SemiPBCOp(0, "cx", qubits=("q0",)), "two qubits"),
+        (SemiPBCOp(0, "alloc", basis="zero"), "ancilla"),
+        (SemiPBCOp(0, "release"), "ancilla"),
+        (
+            SemiPBCOp(
+                0,
+                "t_pauli",
+                term=PauliTerm.from_pairs([("q0", "Z")]),
+                angle_num=True,
+                angle_den=8,
+            ),
+            "integer",
+        ),
+        (
+            SemiPBCOp(
+                0,
+                "t_pauli",
+                term=PauliTerm.from_pairs([("q0", "Z")]),
+                angle_num=1,
+                angle_den=4,
+            ),
+            "angle_num=1",
+        ),
+        (
+            SemiPBCOp(0, "m_pauli", term=PauliTerm.from_pairs([("q0", "Z")])),
+            "result",
+        ),
+        (SemiPBCOp(0, "xor", target="src0", terms=("c0",), const=True), "integer"),
+        (SemiPBCOp(0, "xor", target="src0", terms=None), "terms"),
+        (SemiPBCOp(0, "h", qubits=("q0",), source_id=123), "source_id"),
+    ],
+)
+def test_to_record_rejects_malformed_runtime_shape(op, message):
+    with pytest.raises(ValueError, match=message):
+        op.to_record()
+
+
+def test_to_record_serializes_representative_valid_operations():
+    term = PauliTerm.from_pairs([("q0", "Z")], sign=-1)
+
+    assert SemiPBCOp.clifford(0, "h", ("q0",), source_id="src-h").to_record() == {
+        "id": 0,
+        "op": "h",
+        "qubits": ["q0"],
+        "source_id": "src-h",
+    }
+    assert SemiPBCOp.alloc(1, "a0").to_record() == {
+        "id": 1,
+        "op": "alloc",
+        "qubit": "a0",
+        "basis": "zero",
+    }
+    assert SemiPBCOp.release(2, "a0").to_record() == {
+        "id": 2,
+        "op": "release",
+        "qubit": "a0",
+    }
+    assert SemiPBCOp.pauli_rotation(3, term).to_record() == {
+        "id": 3,
+        "op": "t_pauli",
+        "terms": [["q0", "Z"]],
+        "sign": -1,
+        "angle_num": 1,
+        "angle_den": 8,
+    }
+    assert SemiPBCOp.measurement(4, term, result="c0").to_record() == {
+        "id": 4,
+        "op": "m_pauli",
+        "terms": [["q0", "Z"]],
+        "sign": -1,
+        "result": "c0",
+    }
+    assert SemiPBCOp.xor(5, target="src0", terms=("c0",), const=1).to_record() == {
+        "id": 5,
+        "op": "xor",
+        "target": "src0",
+        "terms": ["c0"],
+        "const": 1,
+    }
+
+
 def test_pauli_op_rejects_weight_above_k_when_validated():
     header = SemiPBCHeader(k=1, data_qubits=2)
     op = SemiPBCOp.pauli_rotation(0, PauliTerm.from_pairs([("q0", "Z"), ("q1", "Z")]))

@@ -66,6 +66,12 @@ def test_full_width_conversion_omits_identity_in_sparse_form():
     assert term.to_full_width(4) == "+IXYZ"
 
 
+@pytest.mark.parametrize("data_qubits", [-1, True])
+def test_to_full_width_rejects_invalid_data_qubit_width(data_qubits):
+    with pytest.raises(ValueError, match="data_qubits"):
+        PauliTerm.from_pairs([]).to_full_width(data_qubits)
+
+
 def test_from_full_width_rejects_non_string_input():
     with pytest.raises(ValueError, match="signed Pauli string"):
         PauliTerm.from_full_width(123)

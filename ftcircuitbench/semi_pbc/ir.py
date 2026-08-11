@@ -178,33 +178,30 @@ class SemiPBCOp:
         )
 
     def to_record(self) -> dict[str, Any]:
-        record: dict[str, Any] = {"id": self.id, "op": self.op}
-        if self.op in _CLIFFORD_OPS:
+        op = _validate_runtime_shape(self)
+        record: dict[str, Any] = {"id": self.id, "op": op}
+        if op in _CLIFFORD_OPS:
             record["qubits"] = list(self.qubits)
-        elif self.op == "alloc":
+        elif op == "alloc":
             record["qubit"] = self.qubit
             record["basis"] = self.basis
-        elif self.op == "release":
+        elif op == "release":
             record["qubit"] = self.qubit
-        elif self.op == "t_pauli":
-            if self.term is None:
-                raise ValueError("t_pauli operation requires term")
+        elif op == "t_pauli":
             record["terms"] = [list(pair) for pair in self.term.pairs]
             record["sign"] = self.term.sign
             record["angle_num"] = self.angle_num
             record["angle_den"] = self.angle_den
-        elif self.op == "m_pauli":
-            if self.term is None:
-                raise ValueError("m_pauli operation requires term")
+        elif op == "m_pauli":
             record["terms"] = [list(pair) for pair in self.term.pairs]
             record["sign"] = self.term.sign
             record["result"] = self.result
-        elif self.op == "xor":
+        elif op == "xor":
             record["target"] = self.target
             record["terms"] = list(self.terms)
             record["const"] = self.const
         else:
-            raise ValueError(f"unsupported semi-PBC operation {self.op!r}")
+            raise ValueError(f"unsupported semi-PBC operation {op!r}")
         if self.source_id is not None:
             record["source_id"] = self.source_id
         return record
@@ -256,59 +253,21 @@ class SemiPBCOp:
         raise ValueError(f"unsupported semi-PBC operation {op!r}")
 
     def validate(self, header: SemiPBCHeader) -> None:
-        _validate_op_id(self.id)
-        _validate_optional_schema_str(self.source_id, "source_id")
-        op = _validate_schema_str(self.op, "op")
-        _reject_irrelevant_runtime_fields(self, op)
+        op = _validate_runtime_shape(self)
         if op in {"h", "s", "sdg"}:
-            qubits = _validate_schema_str_sequence(self.qubits, "qubits", "qubit")
-            if len(qubits) != 1:
-                raise ValueError(f"{op} requires exactly one qubit")
-            _validate_any_qubit(qubits[0], header)
+            _validate_any_qubit(self.qubits[0], header)
             return
         if op == "cx":
-            qubits = _validate_schema_str_sequence(self.qubits, "qubits", "qubit")
-            if len(qubits) != 2:
-                raise ValueError("cx requires exactly two qubits")
-            for qubit in qubits:
+            for qubit in self.qubits:
                 _validate_any_qubit(qubit, header)
             return
-        if op == "alloc":
-            if self.qubit is None:
-                raise ValueError("alloc requires one ancilla qubit")
-            _validate_ancilla_qubit(self.qubit)
-            basis = _validate_schema_str(self.basis, "basis")
-            if basis != "zero":
-                raise ValueError("alloc basis must be 'zero'")
-            return
-        if op == "release":
-            if self.qubit is None:
-                raise ValueError("release requires one ancilla qubit")
-            _validate_ancilla_qubit(self.qubit)
+        if op in {"alloc", "release", "xor"}:
             return
         if op == "t_pauli":
-            angle_num = _validate_schema_int(self.angle_num, "angle_num")
-            angle_den = _validate_schema_int(self.angle_den, "angle_den")
-            if angle_num != 1 or angle_den != 8:
-                raise ValueError("t_pauli requires angle_num=1 and angle_den=8")
             _validate_pauli_term(self.term, header, "t_pauli")
             return
         if op == "m_pauli":
-            if self.result is None:
-                raise ValueError("m_pauli requires result")
-            _validate_physical_classical_id(self.result, "result")
             _validate_pauli_term(self.term, header, "m_pauli")
-            return
-        if op == "xor":
-            if self.target is None:
-                raise ValueError("xor requires target")
-            _validate_source_classical_id(self.target, "target")
-            terms = _validate_schema_str_sequence(self.terms, "terms", "xor term")
-            for term in terms:
-                _validate_classical_input_id(term, "xor term")
-            const = _validate_schema_int(self.const, "xor const")
-            if const not in {0, 1}:
-                raise ValueError("xor const must be 0 or 1")
             return
         raise ValueError(f"unsupported semi-PBC operation {op!r}")
 
@@ -426,6 +385,64 @@ def _reject_irrelevant_runtime_fields(op: SemiPBCOp, op_name: str) -> None:
             raise ValueError(f"{field} is not valid for {op_name} operation")
 
 
+def _validate_runtime_shape(op: SemiPBCOp) -> str:
+    _validate_op_id(op.id)
+    _validate_optional_schema_str(op.source_id, "source_id")
+    op_name = _validate_schema_str(op.op, "op")
+    _reject_irrelevant_runtime_fields(op, op_name)
+    if op_name in {"h", "s", "sdg"}:
+        qubits = _validate_schema_str_sequence(op.qubits, "qubits", "qubit")
+        if len(qubits) != 1:
+            raise ValueError(f"{op_name} requires exactly one qubit")
+        _validate_any_qubit_id_shape(qubits[0])
+        return op_name
+    if op_name == "cx":
+        qubits = _validate_schema_str_sequence(op.qubits, "qubits", "qubit")
+        if len(qubits) != 2:
+            raise ValueError("cx requires exactly two qubits")
+        for qubit in qubits:
+            _validate_any_qubit_id_shape(qubit)
+        return op_name
+    if op_name == "alloc":
+        if op.qubit is None:
+            raise ValueError("alloc requires one ancilla qubit")
+        _validate_ancilla_qubit(op.qubit)
+        basis = _validate_schema_str(op.basis, "basis")
+        if basis != "zero":
+            raise ValueError("alloc basis must be 'zero'")
+        return op_name
+    if op_name == "release":
+        if op.qubit is None:
+            raise ValueError("release requires one ancilla qubit")
+        _validate_ancilla_qubit(op.qubit)
+        return op_name
+    if op_name == "t_pauli":
+        angle_num = _validate_schema_int(op.angle_num, "angle_num")
+        angle_den = _validate_schema_int(op.angle_den, "angle_den")
+        if angle_num != 1 or angle_den != 8:
+            raise ValueError("t_pauli requires angle_num=1 and angle_den=8")
+        _validate_pauli_term_shape(op.term, "t_pauli")
+        return op_name
+    if op_name == "m_pauli":
+        if op.result is None:
+            raise ValueError("m_pauli requires result")
+        _validate_physical_classical_id(op.result, "result")
+        _validate_pauli_term_shape(op.term, "m_pauli")
+        return op_name
+    if op_name == "xor":
+        if op.target is None:
+            raise ValueError("xor requires target")
+        _validate_source_classical_id(op.target, "target")
+        terms = _validate_schema_str_sequence(op.terms, "terms", "xor term")
+        for term in terms:
+            _validate_classical_input_id(term, "xor term")
+        const = _validate_schema_int(op.const, "xor const")
+        if const not in {0, 1}:
+            raise ValueError("xor const must be 0 or 1")
+        return op_name
+    raise ValueError(f"unsupported semi-PBC operation {op_name!r}")
+
+
 def _is_runtime_default(value: object, default: object) -> bool:
     return type(value) is type(default) and value == default
 
@@ -506,8 +523,15 @@ def _validate_op_id(op_id: int) -> None:
         raise ValueError("operation id must be a non-negative integer")
 
 
-def _validate_any_qubit(qubit: object, header: SemiPBCHeader) -> None:
+def _validate_any_qubit_id_shape(qubit: object) -> str:
     qubit = _validate_schema_str(qubit, "qubit")
+    if _DATA_QUBIT_RE.fullmatch(qubit) or _ANCILLA_QUBIT_RE.fullmatch(qubit):
+        return qubit
+    raise ValueError(f"unsupported qubit id {qubit!r}")
+
+
+def _validate_any_qubit(qubit: object, header: SemiPBCHeader) -> None:
+    qubit = _validate_any_qubit_id_shape(qubit)
     if _DATA_QUBIT_RE.fullmatch(qubit):
         _validate_data_qubit(qubit, header)
         return
@@ -558,6 +582,17 @@ def _validate_classical_input_id(classical_id: object, field: str) -> None:
 def _validate_pauli_term(
     term: PauliTerm | None, header: SemiPBCHeader, op_name: str
 ) -> None:
+    pairs = _validate_pauli_term_shape(term, op_name)
+    weight = len(pairs)
+    if weight > header.k:
+        raise ValueError(f"{op_name} Pauli term weight {weight} exceeds k={header.k}")
+    for qubit, _pauli in pairs:
+        _validate_any_qubit(qubit, header)
+
+
+def _validate_pauli_term_shape(
+    term: PauliTerm | None, op_name: str
+) -> tuple[tuple[str, str], ...]:
     if term is None:
         raise ValueError(f"{op_name} requires term")
     if not isinstance(term, PauliTerm):
@@ -573,18 +608,17 @@ def _validate_pauli_term(
     weight = len(pairs)
     if weight < 1:
         raise ValueError(f"{op_name} Pauli term weight must be at least 1")
-    if weight > header.k:
-        raise ValueError(f"{op_name} Pauli term weight {weight} exceeds k={header.k}")
 
     seen_qubits: set[str] = set()
     for pair in pairs:
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
             raise ValueError(f"{op_name} terms must contain 2-item Pauli pairs")
         qubit, pauli = pair
-        _validate_any_qubit(qubit, header)
+        qubit = _validate_any_qubit_id_shape(qubit)
         if qubit in seen_qubits:
             raise ValueError(f"{op_name} duplicate Pauli entry for qubit {qubit!r}")
         seen_qubits.add(qubit)
         pauli = _validate_schema_str(pauli, f"{op_name} Pauli label")
         if pauli not in {"X", "Y", "Z"}:
             raise ValueError(f"{op_name} Pauli label must be X, Y, or Z")
+    return tuple(pairs)
