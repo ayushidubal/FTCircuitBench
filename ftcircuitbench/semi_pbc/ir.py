@@ -69,16 +69,20 @@ class SemiPBCOp:
     source_id: str | None = None
 
     @classmethod
-    def clifford(cls, id: int, op: str, qubits: Iterable[str]) -> SemiPBCOp:
-        return cls(id=id, op=op, qubits=tuple(qubits))
+    def clifford(
+        cls, id: int, op: str, qubits: Iterable[str], source_id: str | None = None
+    ) -> SemiPBCOp:
+        return cls(id=id, op=op, qubits=tuple(qubits), source_id=source_id)
 
     @classmethod
-    def alloc(cls, id: int, qubit: str, basis: str = "zero") -> SemiPBCOp:
-        return cls(id=id, op="alloc", qubit=qubit, basis=basis)
+    def alloc(
+        cls, id: int, qubit: str, basis: str = "zero", source_id: str | None = None
+    ) -> SemiPBCOp:
+        return cls(id=id, op="alloc", qubit=qubit, basis=basis, source_id=source_id)
 
     @classmethod
-    def release(cls, id: int, qubit: str) -> SemiPBCOp:
-        return cls(id=id, op="release", qubit=qubit)
+    def release(cls, id: int, qubit: str, source_id: str | None = None) -> SemiPBCOp:
+        return cls(id=id, op="release", qubit=qubit, source_id=source_id)
 
     @classmethod
     def pauli_rotation(
@@ -105,9 +109,21 @@ class SemiPBCOp:
 
     @classmethod
     def xor(
-        cls, id: int, target: str, terms: Iterable[str], const: int = 0
+        cls,
+        id: int,
+        target: str,
+        terms: Iterable[str],
+        const: int = 0,
+        source_id: str | None = None,
     ) -> SemiPBCOp:
-        return cls(id=id, op="xor", target=target, terms=tuple(terms), const=const)
+        return cls(
+            id=id,
+            op="xor",
+            target=target,
+            terms=tuple(terms),
+            const=const,
+            source_id=source_id,
+        )
 
     def to_record(self) -> dict[str, Any]:
         record: dict[str, Any] = {"id": self.id, "op": self.op}
@@ -147,13 +163,18 @@ class SemiPBCOp:
         id = _required_int(record, "id")
         source_id = _optional_str(record, "source_id")
         if op in _CLIFFORD_OPS:
-            return cls.clifford(id, op, _required_str_list(record, "qubits"))
+            return cls.clifford(
+                id, op, _required_str_list(record, "qubits"), source_id=source_id
+            )
         if op == "alloc":
             return cls.alloc(
-                id, _required_str(record, "qubit"), _required_str(record, "basis")
+                id,
+                _required_str(record, "qubit"),
+                _required_str(record, "basis"),
+                source_id=source_id,
             )
         if op == "release":
-            return cls.release(id, _required_str(record, "qubit"))
+            return cls.release(id, _required_str(record, "qubit"), source_id=source_id)
         if op == "t_pauli":
             return cls(
                 id=id,
@@ -177,6 +198,7 @@ class SemiPBCOp:
                 target=_required_str(record, "target"),
                 terms=_required_str_list(record, "terms"),
                 const=_required_int(record, "const"),
+                source_id=source_id,
             )
         raise ValueError(f"unsupported semi-PBC operation {op!r}")
 

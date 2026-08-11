@@ -32,6 +32,19 @@ def test_jsonl_round_trip_canonical_terms(tmp_path):
     assert loaded_ops == ops
 
 
+def test_jsonl_round_trip_preserves_non_pauli_source_ids(tmp_path):
+    path = tmp_path / "source_ids.semi_pbc.jsonl"
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    ops = [
+        SemiPBCOp(0, "h", qubits=("q0",), source_id="src-h"),
+        SemiPBCOp(1, "alloc", qubit="a0", basis="zero", source_id="src-alloc"),
+        SemiPBCOp(2, "release", qubit="a0", source_id="src-release"),
+        SemiPBCOp(3, "xor", target="src0", terms=("c0",), const=1, source_id="src-xor"),
+    ]
+    write_jsonl(path, header, ops)
+    assert read_jsonl(path) == (header, ops)
+
+
 def test_write_jsonl_rejects_non_monotonic_ids(tmp_path):
     header = SemiPBCHeader(k=1, data_qubits=1)
     ops = [
@@ -79,4 +92,43 @@ def test_pauli_op_rejects_data_qubit_outside_header_width():
     header = SemiPBCHeader(k=1, data_qubits=1)
     op = SemiPBCOp.pauli_rotation(0, PauliTerm.from_pairs([("q1", "Z")]))
     with pytest.raises(ValueError, match="outside"):
+        op.validate(header)
+
+
+@pytest.mark.parametrize(
+    ("op", "message"),
+    [
+        (SemiPBCOp.clifford(-1, "h", ("q0",)), "non-negative"),
+        (SemiPBCOp.clifford(0, "h", ()), "one qubit"),
+        (SemiPBCOp.clifford(0, "s", ("q0", "q1")), "one qubit"),
+        (SemiPBCOp.clifford(0, "cx", ("q0",)), "two qubits"),
+        (SemiPBCOp.alloc(0, "q0"), "ancilla"),
+        (SemiPBCOp.alloc(0, "a0", basis="plus"), "basis"),
+        (SemiPBCOp.release(0, "q0"), "ancilla"),
+        (
+            SemiPBCOp(
+                0,
+                "t_pauli",
+                term=PauliTerm.from_pairs([("q0", "Z")]),
+                angle_num=1,
+                angle_den=4,
+            ),
+            "angle_num=1",
+        ),
+        (
+            SemiPBCOp(0, "m_pauli", term=PauliTerm.from_pairs([("q0", "Z")])),
+            "result",
+        ),
+        (
+            SemiPBCOp.measurement(0, PauliTerm.from_pairs([("q0", "Z")]), result="m0"),
+            "classical",
+        ),
+        (SemiPBCOp.xor(0, target="bit0", terms=["c0"]), "classical"),
+        (SemiPBCOp.xor(0, target="src0", terms=["bit0"]), "classical"),
+        (SemiPBCOp.xor(0, target="src0", terms=["c0"], const=2), "const"),
+    ],
+)
+def test_validate_rejects_malformed_operation_branches(op, message):
+    header = SemiPBCHeader(k=1, data_qubits=2)
+    with pytest.raises(ValueError, match=message):
         op.validate(header)
