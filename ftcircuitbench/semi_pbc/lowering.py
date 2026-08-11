@@ -45,6 +45,7 @@ def lower_pauli_measurement(
     next_classical: int,
 ) -> LoweringResult:
     _validate_k(k)
+    _validate_non_identity_term(term)
     c_raw = f"c{next_classical}"
     xor_const = 1 if term.sign == -1 else 0
     if term.weight <= k:
@@ -128,6 +129,7 @@ def lower_pauli_rotation(
     source_id: str | None = None,
 ) -> list[SemiPBCOp]:
     _validate_k(k)
+    _validate_non_identity_term(term)
     if term.weight <= k:
         return [SemiPBCOp.pauli_rotation(start_id, term, source_id=source_id)]
 
@@ -166,3 +168,8 @@ def lower_pauli_rotation(
 def _validate_k(k: int) -> None:
     if type(k) is not int or k < 1:
         raise ValueError("k must be an integer >= 1")
+
+
+def _validate_non_identity_term(term: PauliTerm) -> None:
+    if term.weight < 1:
+        raise ValueError("cannot lower identity Pauli term with weight 0")

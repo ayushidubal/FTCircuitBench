@@ -278,6 +278,12 @@ def test_rotation_passes_through_when_weight_within_k():
     assert ops[0].term == term
 
 
+def test_rotation_lowering_rejects_identity_pauli_term():
+    term = PauliTerm.from_pairs([])
+    with pytest.raises(ValueError, match="identity|weight"):
+        lower_pauli_rotation(start_id=0, term=term, k=1)
+
+
 def test_lowering_rejects_invalid_k():
     term = PauliTerm.from_pairs([("q0", "Z")])
     with pytest.raises(ValueError, match="k"):
@@ -360,6 +366,20 @@ def test_negative_low_weight_measurement_normalizes_physical_sign():
     assert measure.term.pairs == (("q1", "Z"),)
     assert lowered.ops[1].terms == ("c0",)
     assert lowered.ops[1].const == 1
+
+
+def test_measurement_lowering_rejects_identity_pauli_term():
+    term = PauliTerm.from_pairs([])
+    with pytest.raises(ValueError, match="identity|weight"):
+        lower_pauli_measurement(
+            start_id=0,
+            term=term,
+            k=1,
+            result="src0",
+            source_id="line1",
+            next_ancilla=0,
+            next_classical=0,
+        )
 
 
 def test_measurement_lowering_rejects_invalid_k():
