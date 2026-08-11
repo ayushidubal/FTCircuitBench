@@ -66,6 +66,11 @@ def test_full_width_conversion_omits_identity_in_sparse_form():
     assert term.to_full_width(4) == "+IXYZ"
 
 
+def test_from_full_width_rejects_non_string_input():
+    with pytest.raises(ValueError, match="signed Pauli string"):
+        PauliTerm.from_full_width(123)
+
+
 def test_pauli_multiplication_tracks_real_signed_result():
     left = PauliTerm.from_pairs([("q0", "X"), ("q1", "Z")])
     right = PauliTerm.from_pairs([("q0", "X"), ("q2", "Y")], sign=-1)

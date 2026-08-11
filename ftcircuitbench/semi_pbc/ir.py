@@ -119,7 +119,12 @@ class SemiPBCOp:
     def clifford(
         cls, id: int, op: str, qubits: Iterable[str], source_id: str | None = None
     ) -> SemiPBCOp:
-        return cls(id=id, op=op, qubits=tuple(qubits), source_id=source_id)
+        return cls(
+            id=id,
+            op=op,
+            qubits=_validate_schema_str_sequence(qubits, "qubits", "qubit"),
+            source_id=source_id,
+        )
 
     @classmethod
     def alloc(
@@ -167,7 +172,7 @@ class SemiPBCOp:
             id=id,
             op="xor",
             target=target,
-            terms=tuple(terms),
+            terms=_validate_schema_str_sequence(terms, "terms", "xor term"),
             const=const,
             source_id=source_id,
         )

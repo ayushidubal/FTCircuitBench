@@ -56,6 +56,28 @@ def test_write_jsonl_rejects_non_monotonic_ids(tmp_path):
         write_jsonl(tmp_path / "bad.jsonl", header, ops)
 
 
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: SemiPBCOp.clifford(0, "h", None),
+        lambda: SemiPBCOp.clifford(0, "h", (0,)),
+        lambda: SemiPBCOp.xor(0, "src0", None),
+        lambda: SemiPBCOp.xor(0, "src0", [0]),
+    ],
+)
+def test_public_constructors_reject_missing_string_sequences(factory):
+    with pytest.raises(ValueError, match="list or tuple"):
+        factory()
+
+
+def test_public_constructors_accept_list_and_tuple_string_sequences():
+    clifford = SemiPBCOp.clifford(0, "h", ["q0"])
+    xor = SemiPBCOp.xor(1, "src0", ("c0", "src1"))
+
+    assert clifford.qubits == ("q0",)
+    assert xor.terms == ("c0", "src1")
+
+
 def test_read_jsonl_rejects_non_monotonic_ids(tmp_path):
     path = tmp_path / "bad.jsonl"
     path.write_text(
@@ -274,7 +296,7 @@ def test_pauli_op_rejects_data_qubit_outside_header_width():
 @pytest.mark.parametrize(
     ("op", "message"),
     [
-        (SemiPBCOp.clifford(0, "h", (0,)), "qubit"),
+        (SemiPBCOp(0, "h", qubits=(0,)), "qubit"),
         (SemiPBCOp.alloc(0, 0), "qubit"),
         (SemiPBCOp.release(0, 0), "qubit"),
         (
@@ -282,7 +304,7 @@ def test_pauli_op_rejects_data_qubit_outside_header_width():
             "result",
         ),
         (SemiPBCOp.xor(0, target=0, terms=["c0"]), "target"),
-        (SemiPBCOp.xor(0, target="src0", terms=[0]), "xor term"),
+        (SemiPBCOp(0, "xor", target="src0", terms=(0,)), "xor term"),
     ],
 )
 def test_validate_rejects_non_string_qubit_and_classical_fields(op, message):

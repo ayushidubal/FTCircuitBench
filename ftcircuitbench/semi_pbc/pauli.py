@@ -100,7 +100,11 @@ class PauliTerm:
     def from_full_width(
         cls, signed_pauli: str, *, source_id: str | None = None
     ) -> PauliTerm:
-        if not signed_pauli or signed_pauli[0] not in "+-":
+        if (
+            not isinstance(signed_pauli, str)
+            or not signed_pauli
+            or signed_pauli[0] not in "+-"
+        ):
             raise ValueError(f"expected signed Pauli string, got {signed_pauli!r}")
         sign = 1 if signed_pauli[0] == "+" else -1
         body = signed_pauli[1:]
