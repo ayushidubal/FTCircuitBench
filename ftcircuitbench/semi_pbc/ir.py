@@ -248,7 +248,9 @@ class SemiPBCOp:
             _validate_ancilla_qubit(self.qubit)
             return
         if self.op == "t_pauli":
-            if self.angle_num != 1 or self.angle_den != 8:
+            angle_num = _validate_schema_int(self.angle_num, "angle_num")
+            angle_den = _validate_schema_int(self.angle_den, "angle_den")
+            if angle_num != 1 or angle_den != 8:
                 raise ValueError("t_pauli requires angle_num=1 and angle_den=8")
             _validate_pauli_term(self.term, header, "t_pauli")
             return
@@ -264,7 +266,8 @@ class SemiPBCOp:
             _validate_classical_id(self.target, "target")
             for term in self.terms:
                 _validate_classical_id(term, "xor term")
-            if self.const not in {0, 1}:
+            const = _validate_schema_int(self.const, "xor const")
+            if const not in {0, 1}:
                 raise ValueError("xor const must be 0 or 1")
             return
         raise ValueError(f"unsupported semi-PBC operation {self.op!r}")
@@ -332,8 +335,12 @@ def _reject_unknown_fields(record: dict[str, Any], op: str) -> None:
 
 def _required_int(record: dict[str, Any], key: str) -> int:
     value = record.get(key)
+    return _validate_schema_int(value, key)
+
+
+def _validate_schema_int(value: object, field: str) -> int:
     if type(value) is not int:
-        raise ValueError(f"{key} must be an integer")
+        raise ValueError(f"{field} must be an integer")
     return value
 
 
@@ -417,7 +424,8 @@ def _validate_pauli_term(
 ) -> None:
     if term is None:
         raise ValueError(f"{op_name} requires term")
-    if term.sign not in {1, -1}:
+    sign = _validate_schema_int(term.sign, f"{op_name} sign")
+    if sign not in {1, -1}:
         raise ValueError(f"{op_name} sign must be 1 or -1")
     if term.weight < 1:
         raise ValueError(f"{op_name} Pauli term weight must be at least 1")

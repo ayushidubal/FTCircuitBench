@@ -155,12 +155,26 @@ def test_pauli_op_rejects_data_qubit_outside_header_width():
             "angle_num=1",
         ),
         (
+            SemiPBCOp(
+                0,
+                "t_pauli",
+                term=PauliTerm.from_pairs([("q0", "Z")]),
+                angle_num=True,
+                angle_den=8,
+            ),
+            "integer",
+        ),
+        (
             SemiPBCOp(0, "m_pauli", term=PauliTerm.from_pairs([("q0", "Z")])),
             "result",
         ),
         (
             SemiPBCOp.pauli_rotation(0, PauliTerm((("q0", "Z"),), sign=0)),
             "sign",
+        ),
+        (
+            SemiPBCOp.pauli_rotation(0, PauliTerm((("q0", "Z"),), sign=True)),
+            "integer",
         ),
         (
             SemiPBCOp.measurement(0, PauliTerm((("q0", "Z"),), sign=0), result="c0"),
@@ -174,6 +188,7 @@ def test_pauli_op_rejects_data_qubit_outside_header_width():
         (SemiPBCOp.xor(0, target="bit0", terms=["c0"]), "classical"),
         (SemiPBCOp.xor(0, target="src0", terms=["bit0"]), "classical"),
         (SemiPBCOp.xor(0, target="src0", terms=["c0"], const=2), "const"),
+        (SemiPBCOp.xor(0, target="src0", terms=["c0"], const=True), "integer"),
         (SemiPBCOp.clifford(0, "cz", ("q0", "q1")), "unsupported"),
         (SemiPBCOp(0, "reset", qubit="q0"), "unsupported"),
     ],
