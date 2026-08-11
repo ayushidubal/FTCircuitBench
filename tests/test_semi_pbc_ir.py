@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -93,6 +94,51 @@ def test_read_jsonl_rejects_unknown_operation_field(tmp_path):
         '{"id":0,"op":"h","qubits":["q0"],"extra":true}\n'
     )
     with pytest.raises(ValueError, match="unknown|unexpected"):
+        read_jsonl(path)
+
+
+def test_read_jsonl_rejects_unknown_header_field(tmp_path):
+    path = tmp_path / "bad_header.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1,"extra":true}\n'
+    )
+    with pytest.raises(ValueError, match=r"line 1: .*unknown"):
+        read_jsonl(path)
+
+
+def test_read_jsonl_streams_without_path_read_text(tmp_path, monkeypatch):
+    path = tmp_path / "streamed_read.semi_pbc.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n'
+        '{"id":0,"op":"h","qubits":["q0"]}\n'
+    )
+
+    def fail_read_text(self, *args, **kwargs):
+        raise AssertionError(f"{Path.read_text.__name__} should not be called")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    assert read_jsonl(path) == (
+        SemiPBCHeader(k=1, data_qubits=1),
+        [SemiPBCOp.clifford(0, "h", ("q0",))],
+    )
+
+
+def test_read_jsonl_rejects_blank_lines_with_line_context(tmp_path):
+    path = tmp_path / "blank.jsonl"
+    path.write_text('{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n' "\n")
+    with pytest.raises(ValueError, match=r"line 2: .*blank"):
+        read_jsonl(path)
+
+
+def test_read_jsonl_wraps_operation_errors_with_line_context(tmp_path):
+    path = tmp_path / "bad_op.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n'
+        '{"id":0,"op":"h","qubits":["q0"]}\n'
+        '{"id":1,"op":"m_pauli","terms":[["q0","Z"]]}\n'
+    )
+    with pytest.raises(ValueError, match=r"line 3: .*result"):
         read_jsonl(path)
 
 

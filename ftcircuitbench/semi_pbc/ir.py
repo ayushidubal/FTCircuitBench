@@ -15,6 +15,7 @@ _DATA_QUBIT_RE = re.compile(r"q([0-9]+)\Z")
 _ANCILLA_QUBIT_RE = re.compile(r"a([0-9]+)\Z")
 _CLASSICAL_RE = re.compile(r"(?:c|src)([0-9]+)\Z")
 _CLIFFORD_OPS = {"h", "s", "sdg", "cx"}
+_HEADER_FIELDS = {"format", "version", "k", "data_qubits"}
 _OP_FIELDS = {
     "h": {"id", "op", "qubits", "source_id"},
     "s": {"id", "op", "qubits", "source_id"},
@@ -63,6 +64,7 @@ class SemiPBCHeader:
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> SemiPBCHeader:
+        _reject_unknown_fields(record, "header", _HEADER_FIELDS)
         return cls(
             k=_required_int(record, "k"),
             data_qubits=_required_int(record, "data_qubits"),
@@ -292,22 +294,46 @@ def write_jsonl(
 
 def read_jsonl(path: str | Path) -> tuple[SemiPBCHeader, list[SemiPBCOp]]:
     input_path = Path(path)
-    lines = input_path.read_text().splitlines()
-    if not lines:
-        raise ValueError("semi-PBC JSONL file is empty")
-    header = SemiPBCHeader.from_record(_json_record(lines[0], 1))
+    header: SemiPBCHeader | None = None
     ops: list[SemiPBCOp] = []
     last_id: int | None = None
-    for line_number, line in enumerate(lines[1:], start=2):
-        if not line:
-            continue
-        op = SemiPBCOp.from_record(_json_record(line, line_number))
-        op.validate(header)
-        if last_id is not None and op.id <= last_id:
-            raise ValueError("operation ids must be strictly monotonically increasing")
-        last_id = op.id
-        ops.append(op)
+    with input_path.open() as input_file:
+        for line_number, line in enumerate(input_file, start=1):
+            record = _json_record_from_line(line, line_number)
+            if header is None:
+                header = _with_line_context(
+                    line_number, SemiPBCHeader.from_record, record
+                )
+                continue
+            op = _with_line_context(line_number, SemiPBCOp.from_record, record)
+            _with_line_context(line_number, op.validate, header)
+            if last_id is not None and op.id <= last_id:
+                raise ValueError(
+                    f"line {line_number}: operation ids must be strictly "
+                    "monotonically increasing"
+                )
+            last_id = op.id
+            ops.append(op)
+    if header is None:
+        raise ValueError("semi-PBC JSONL file is empty")
     return header, ops
+
+
+def _json_record_from_line(line: str, line_number: int) -> dict[str, Any]:
+    if not line.strip():
+        raise ValueError(f"line {line_number}: blank JSONL line")
+    return _with_line_context(line_number, _json_record, line, line_number)
+
+
+def _with_line_context(line_number: int, func, *args):
+    try:
+        return func(*args)
+    except ValueError as exc:
+        message = str(exc)
+        prefix = f"line {line_number}:"
+        if message.startswith(prefix):
+            raise
+        raise ValueError(f"{prefix} {message}") from exc
 
 
 def _json_record(line: str, line_number: int) -> dict[str, Any]:
@@ -324,13 +350,16 @@ def _json_line(record: dict[str, Any]) -> str:
     return json.dumps(record, separators=(",", ":")) + "\n"
 
 
-def _reject_unknown_fields(record: dict[str, Any], op: str) -> None:
-    allowed = _OP_FIELDS.get(op)
+def _reject_unknown_fields(
+    record: dict[str, Any], schema: str, allowed: set[str] | None = None
+) -> None:
+    if allowed is None:
+        allowed = _OP_FIELDS.get(schema)
     if allowed is None:
         return
     unknown = sorted(set(record) - allowed)
     if unknown:
-        raise ValueError(f"unknown field(s) for {op}: {', '.join(unknown)}")
+        raise ValueError(f"unknown field(s) for {schema}: {', '.join(unknown)}")
 
 
 def _required_int(record: dict[str, Any], key: str) -> int:
