@@ -503,14 +503,26 @@ def _validate_pauli_term(
     sign = _validate_schema_int(term.sign, f"{op_name} sign")
     if sign not in {1, -1}:
         raise ValueError(f"{op_name} sign must be 1 or -1")
-    if term.weight < 1:
+
+    pairs = term.pairs
+    if not isinstance(pairs, (list, tuple)):
+        raise ValueError(f"{op_name} terms must be a list or tuple of Pauli pairs")
+
+    weight = len(pairs)
+    if weight < 1:
         raise ValueError(f"{op_name} Pauli term weight must be at least 1")
-    if term.weight > header.k:
-        raise ValueError(
-            f"{op_name} Pauli term weight {term.weight} exceeds k={header.k}"
-        )
-    for qubit, pauli in term.pairs:
+    if weight > header.k:
+        raise ValueError(f"{op_name} Pauli term weight {weight} exceeds k={header.k}")
+
+    seen_qubits: set[str] = set()
+    for pair in pairs:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError(f"{op_name} terms must contain 2-item Pauli pairs")
+        qubit, pauli = pair
         _validate_any_qubit(qubit, header)
+        if qubit in seen_qubits:
+            raise ValueError(f"{op_name} duplicate Pauli entry for qubit {qubit!r}")
+        seen_qubits.add(qubit)
         pauli = _validate_schema_str(pauli, f"{op_name} Pauli label")
         if pauli not in {"X", "Y", "Z"}:
             raise ValueError(f"{op_name} Pauli label must be X, Y, or Z")

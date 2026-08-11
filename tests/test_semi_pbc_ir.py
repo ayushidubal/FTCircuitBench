@@ -199,6 +199,22 @@ def test_write_jsonl_rejects_runtime_pauli_term_with_invalid_label(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("term", "message"),
+    [
+        (PauliTerm((1,), sign=1), "pair"),
+        (PauliTerm(None, sign=1), "terms"),
+        (PauliTerm((("q0", "X"), ("q0", "Z")), sign=1), "duplicate"),
+    ],
+)
+def test_validate_rejects_malformed_runtime_pauli_term_pairs(term, message):
+    header = SemiPBCHeader(k=2, data_qubits=1)
+    op = SemiPBCOp.pauli_rotation(0, term)
+
+    with pytest.raises(ValueError, match=message):
+        op.validate(header)
+
+
+@pytest.mark.parametrize(
     ("op", "message"),
     [
         (SemiPBCOp(0, [], qubits=("q0",)), "op"),
