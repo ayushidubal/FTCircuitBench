@@ -6,9 +6,7 @@ from ftcircuitbench.semi_pbc.pauli import PauliTerm
 
 
 def test_pauli_term_canonicalizes_data_then_ancilla():
-    term = PauliTerm.from_pairs(
-        [("a2", "X"), ("q10", "Z"), ("q2", "Y"), ("a0", "Z")]
-    )
+    term = PauliTerm.from_pairs([("a2", "X"), ("q10", "Z"), ("q2", "Y"), ("a0", "Z")])
     assert term.pairs == (("q2", "Y"), ("q10", "Z"), ("a0", "Z"), ("a2", "X"))
     assert term.weight == 4
 
@@ -16,6 +14,12 @@ def test_pauli_term_canonicalizes_data_then_ancilla():
 def test_pauli_term_rejects_duplicate_non_identity_qubit():
     with pytest.raises(ValueError, match="duplicate"):
         PauliTerm.from_pairs([("q0", "X"), ("q0", "Z")])
+
+
+@pytest.mark.parametrize("qubit", ["q01", "a01"])
+def test_pauli_term_rejects_leading_zero_qubit_ids(qubit):
+    with pytest.raises(ValueError, match="leading zero|unsupported qubit"):
+        PauliTerm.from_pairs([(qubit, "Z")])
 
 
 def test_full_width_conversion_omits_identity_in_sparse_form():

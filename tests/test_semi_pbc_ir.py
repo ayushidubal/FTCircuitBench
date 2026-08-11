@@ -87,6 +87,17 @@ def test_read_jsonl_rejects_unsupported_operation_record(tmp_path):
         read_jsonl(path)
 
 
+def test_read_jsonl_rejects_leading_zero_qubit_with_line_context(tmp_path):
+    path = tmp_path / "bad_leading_zero_qubit.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":2}\n'
+        '{"id":0,"op":"t_pauli","terms":[["q01","Z"]],'
+        '"sign":1,"angle_num":1,"angle_den":8}\n'
+    )
+    with pytest.raises(ValueError, match=r"line 2: .*leading zero|line 2: .*q01"):
+        read_jsonl(path)
+
+
 def test_read_jsonl_rejects_unknown_operation_field(tmp_path):
     path = tmp_path / "bad.jsonl"
     path.write_text(
@@ -214,6 +225,15 @@ def test_validate_rejects_malformed_runtime_pauli_term_pairs(term, message):
         op.validate(header)
 
 
+@pytest.mark.parametrize("qubit", ["q01", "a01"])
+def test_validate_rejects_runtime_pauli_term_leading_zero_qubits(qubit):
+    header = SemiPBCHeader(k=1, data_qubits=2)
+    op = SemiPBCOp.pauli_rotation(0, PauliTerm(((qubit, "Z"),), sign=1))
+
+    with pytest.raises(ValueError, match="leading zero|qubit"):
+        op.validate(header)
+
+
 @pytest.mark.parametrize(
     ("op", "message"),
     [
@@ -318,8 +338,14 @@ def test_validate_rejects_non_string_qubit_and_classical_fields(op, message):
             SemiPBCOp.measurement(0, PauliTerm.from_pairs([("q0", "Z")]), result="m0"),
             "classical",
         ),
+        (
+            SemiPBCOp.measurement(0, PauliTerm.from_pairs([("q0", "Z")]), result="c01"),
+            "leading zero|classical",
+        ),
         (SemiPBCOp.xor(0, target="bit0", terms=["c0"]), "classical"),
+        (SemiPBCOp.xor(0, target="src01", terms=["c0"]), "leading zero|classical"),
         (SemiPBCOp.xor(0, target="src0", terms=["bit0"]), "classical"),
+        (SemiPBCOp.xor(0, target="src0", terms=["c01"]), "leading zero|classical"),
         (SemiPBCOp.xor(0, target="src0", terms=["c0"], const=2), "const"),
         (SemiPBCOp.xor(0, target="src0", terms=["c0"], const=True), "integer"),
         (SemiPBCOp.clifford(0, "cz", ("q0", "q1")), "unsupported"),

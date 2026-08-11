@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Tuple
 
-PauliPair = Tuple[str, str]
+PauliPair = tuple[str, str]
+_QUBIT_ID_RE = re.compile(r"([qa])([0-9]+)\Z")
 
 _SINGLE_PRODUCT = {
     ("X", "X"): (None, 0),
@@ -18,14 +20,21 @@ _SINGLE_PRODUCT = {
 }
 
 
-def _qubit_sort_key(name: str) -> tuple[int, int]:
-    prefix = name[0]
-    if prefix not in {"q", "a"}:
-        raise ValueError(f"unsupported qubit id {name!r}")
+def _parse_qubit_id(name: str) -> tuple[str, int]:
     try:
-        idx = int(name[1:])
-    except ValueError as exc:
+        match = _QUBIT_ID_RE.fullmatch(name)
+    except TypeError as exc:
         raise ValueError(f"unsupported qubit id {name!r}") from exc
+    if match is None:
+        raise ValueError(f"unsupported qubit id {name!r}")
+    prefix, suffix = match.groups()
+    if len(suffix) > 1 and suffix.startswith("0"):
+        raise ValueError(f"qubit id {name!r} has leading zero")
+    return prefix, int(suffix)
+
+
+def _qubit_sort_key(name: str) -> tuple[int, int]:
+    prefix, idx = _parse_qubit_id(name)
     return (0 if prefix == "q" else 1, idx)
 
 
@@ -42,7 +51,7 @@ class PauliTerm:
         *,
         sign: int = 1,
         source_id: str | None = None,
-    ) -> "PauliTerm":
+    ) -> PauliTerm:
         if sign not in {1, -1}:
             raise ValueError(f"unsupported sign {sign!r}")
         seen: set[str] = set()
@@ -66,7 +75,7 @@ class PauliTerm:
     @classmethod
     def from_full_width(
         cls, signed_pauli: str, *, source_id: str | None = None
-    ) -> "PauliTerm":
+    ) -> PauliTerm:
         if not signed_pauli or signed_pauli[0] not in "+-":
             raise ValueError(f"expected signed Pauli string, got {signed_pauli!r}")
         sign = 1 if signed_pauli[0] == "+" else -1
@@ -84,15 +93,17 @@ class PauliTerm:
     def to_full_width(self, data_qubits: int) -> str:
         chars = ["I"] * data_qubits
         for qubit, pauli in self.pairs:
-            if not qubit.startswith("q"):
-                raise ValueError("cannot emit ancilla term in full-width data-only format")
-            idx = int(qubit[1:])
+            prefix, idx = _parse_qubit_id(qubit)
+            if prefix != "q":
+                raise ValueError(
+                    "cannot emit ancilla term in full-width data-only format"
+                )
             if idx >= data_qubits:
                 raise ValueError(f"qubit {qubit} outside width {data_qubits}")
             chars[idx] = pauli
         return ("+" if self.sign == 1 else "-") + "".join(chars)
 
-    def commutes_with(self, other: "PauliTerm") -> bool:
+    def commutes_with(self, other: PauliTerm) -> bool:
         other_by_qubit = dict(other.pairs)
         count = 0
         for qubit, pauli in self.pairs:
@@ -101,7 +112,7 @@ class PauliTerm:
                 count += 1
         return count % 2 == 0
 
-    def multiply_real(self, other: "PauliTerm") -> "PauliTerm":
+    def multiply_real(self, other: PauliTerm) -> PauliTerm:
         merged: dict[str, str] = dict(self.pairs)
         sign = self.sign * other.sign
         phase = 0

@@ -12,9 +12,10 @@ from typing import Any
 
 from ftcircuitbench.semi_pbc.pauli import PauliTerm
 
-_DATA_QUBIT_RE = re.compile(r"q([0-9]+)\Z")
-_ANCILLA_QUBIT_RE = re.compile(r"a([0-9]+)\Z")
-_CLASSICAL_RE = re.compile(r"(?:c|src)([0-9]+)\Z")
+_INDEXED_SUFFIX = r"(?:0|[1-9][0-9]*)"
+_DATA_QUBIT_RE = re.compile(rf"q({_INDEXED_SUFFIX})\Z")
+_ANCILLA_QUBIT_RE = re.compile(rf"a({_INDEXED_SUFFIX})\Z")
+_CLASSICAL_RE = re.compile(rf"(?:c|src)({_INDEXED_SUFFIX})\Z")
 _CLIFFORD_OPS = {"h", "s", "sdg", "cx"}
 _HEADER_FIELDS = {"format", "version", "k", "data_qubits"}
 _OP_FIELDS = {
