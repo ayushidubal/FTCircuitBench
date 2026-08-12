@@ -104,7 +104,7 @@ def _select_candidate(
         candidate
         for priors in _candidate_prior_groups(eligible, greedy_order)
         if (candidate := _build_candidate(current_term, priors)) is not None
-        and candidate.term.weight < current_term.weight
+        and 0 < candidate.term.weight < current_term.weight
     ]
     if not candidates:
         return None

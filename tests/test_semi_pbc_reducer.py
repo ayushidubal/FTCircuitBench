@@ -141,3 +141,35 @@ def test_reducer_composes_prior_result_const_when_mapping_representatives():
     assert reduced[3].used_source_ids == ("line1",)
     assert reduced[3].result_terms == ("src0", "src1")
     assert reduced[3].result_const == 1
+
+
+def test_reducer_skips_identity_replacement_candidates():
+    ops = [
+        src(0, "m_pauli", "+Z"),
+        src(1, "m_pauli", "+Z"),
+    ]
+    reduced = reduce_measurements(ops, greedy_order=1)
+    assert reduced[1].used_source_ids == ()
+    assert reduced[1].term.pairs == (("q0", "Z"),)
+
+
+def test_reducer_xor_cancels_duplicate_result_terms_for_pair_candidates():
+    ops = [
+        src(0, "m_pauli", "+ZII"),
+        src(1, "m_pauli", "+ZZI"),
+        src(2, "m_pauli", "+ZZZ"),
+    ]
+    reduced = reduce_measurements(ops, greedy_order=2)
+    assert reduced[1].result_terms == ("src0",)
+    assert reduced[2].used_source_ids == ("line0", "line1")
+    assert reduced[2].result_terms == ("src1",)
+
+
+def test_reducer_skips_imaginary_product_candidates():
+    ops = [
+        src(0, "m_pauli", "+X"),
+        src(1, "m_pauli", "+Y"),
+    ]
+    reduced = reduce_measurements(ops, greedy_order=1)
+    assert reduced[1].used_source_ids == ()
+    assert reduced[1].term.pairs == (("q0", "Y"),)
