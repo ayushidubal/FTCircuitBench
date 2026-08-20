@@ -49,12 +49,15 @@ def test_negative_measurement_lowering_matches_source_projectors():
     assert np.allclose(actual_one, expected_one)
 
 
-def test_rotation_lowering_uses_basis_changes_and_weight_one_rotation():
-    term = PauliTerm.from_pairs([("q0", "X"), ("q1", "Y"), ("q2", "Z")])
+def test_rotation_lowering_uses_basis_changes_and_max_k_rotation():
+    term = PauliTerm.from_pairs(
+        [("q0", "X"), ("q1", "Y"), ("q2", "Z"), ("q3", "X")]
+    )
     ops = lower_pauli_rotation(start_id=0, term=term, k=2, source_id="line4")
     assert [op.op for op in ops] == [
         "h",
         "sdg",
+        "h",
         "h",
         "cx",
         "cx",
@@ -62,25 +65,26 @@ def test_rotation_lowering_uses_basis_changes_and_weight_one_rotation():
         "cx",
         "cx",
         "h",
+        "h",
         "s",
         "h",
     ]
     assert [op.qubits for op in ops if op.op == "cx"] == [
-        ("q1", "q0"),
         ("q2", "q0"),
+        ("q3", "q0"),
+        ("q3", "q0"),
         ("q2", "q0"),
-        ("q1", "q0"),
     ]
     t_ops = [op for op in ops if op.op == "t_pauli"]
     assert len(t_ops) == 1
-    assert t_ops[0].term.pairs == (("q0", "Z"),)
+    assert t_ops[0].term.pairs == (("q0", "Z"), ("q1", "Z"))
     assert t_ops[0].source_id == "line4"
     assert (
         max(
             (op.term.weight for op in ops if op.op in {"t_pauli", "m_pauli"}),
             default=0,
         )
-        <= 1
+        == 2
     )
 
 
@@ -290,8 +294,17 @@ def test_lowering_rejects_invalid_k():
         lower_pauli_rotation(start_id=0, term=term, k=0)
 
 
-def test_measurement_lowering_uses_ancilla_and_xor_for_negative_sign():
-    term = PauliTerm.from_pairs([("q0", "X"), ("q1", "Z"), ("q2", "Z")], sign=-1)
+def test_rotation_lowering_rejects_negative_start_id():
+    term = PauliTerm.from_pairs([("q0", "Z")])
+    with pytest.raises(ValueError, match="start_id"):
+        lower_pauli_rotation(start_id=-1, term=term, k=1)
+
+
+def test_measurement_lowering_uses_max_k_data_measurement_and_xor():
+    term = PauliTerm.from_pairs(
+        [("q0", "X"), ("q1", "Z"), ("q2", "Z"), ("q3", "Z")],
+        sign=-1,
+    )
     lowered = lower_pauli_measurement(
         start_id=0,
         term=term,
@@ -302,33 +315,42 @@ def test_measurement_lowering_uses_ancilla_and_xor_for_negative_sign():
         next_classical=0,
     )
     ops = lowered.ops
-    assert lowered.next_ancilla == 1
+    assert lowered.next_ancilla == 0
     assert lowered.next_classical == 1
     assert [op.op for op in ops] == [
-        "alloc",
         "h",
-        "cx",
         "cx",
         "cx",
         "m_pauli",
+        "cx",
+        "cx",
         "h",
-        "release",
         "xor",
     ]
     assert [op.qubits for op in ops if op.op == "cx"] == [
-        ("q0", "a0"),
-        ("q1", "a0"),
-        ("q2", "a0"),
+        ("q2", "q0"),
+        ("q3", "q0"),
+        ("q3", "q0"),
+        ("q2", "q0"),
     ]
     measure = next(op for op in ops if op.op == "m_pauli")
     assert measure.result == "c0"
     assert measure.source_id == "line4"
     assert measure.term.sign == 1
-    assert measure.term.pairs == (("a0", "Z"),)
+    assert measure.term.pairs == (("q0", "Z"), ("q1", "Z"))
     xor = ops[-1]
     assert xor.target == "src4"
     assert xor.terms == ("c0",)
     assert xor.const == 1
+
+    expected_zero, expected_one = signed_pauli_projectors(term, data_qubits=4)
+    actual_zero, actual_one = induced_source_projectors(
+        ops,
+        source="src4",
+        data_qubits=4,
+    )
+    assert np.allclose(actual_zero, expected_zero)
+    assert np.allclose(actual_one, expected_one)
 
 
 def test_measurement_passes_through_when_weight_within_k():
@@ -394,3 +416,28 @@ def test_measurement_lowering_rejects_invalid_k():
             next_ancilla=0,
             next_classical=0,
         )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"start_id": -1}, "start_id"),
+        ({"result": "c0"}, "source.*result|result"),
+        ({"next_ancilla": -1}, "next_ancilla"),
+        ({"next_classical": -1}, "next_classical"),
+    ],
+)
+def test_measurement_lowering_rejects_invalid_identifiers(kwargs, message):
+    term = PauliTerm.from_pairs([("q0", "Z")])
+    args = {
+        "start_id": 0,
+        "term": term,
+        "k": 1,
+        "result": "src0",
+        "source_id": "line1",
+        "next_ancilla": 0,
+        "next_classical": 0,
+    }
+    args.update(kwargs)
+    with pytest.raises(ValueError, match=message):
+        lower_pauli_measurement(**args)

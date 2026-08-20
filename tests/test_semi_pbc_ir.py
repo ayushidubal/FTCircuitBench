@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from ftcircuitbench.semi_pbc.ir import SemiPBCHeader, SemiPBCOp, read_jsonl, write_jsonl
+from ftcircuitbench.semi_pbc.ir import (
+    SemiPBCHeader,
+    SemiPBCOp,
+    read_jsonl,
+    validate_program,
+    write_jsonl,
+)
 from ftcircuitbench.semi_pbc.pauli import PauliTerm
 
 
@@ -40,7 +46,7 @@ def test_jsonl_round_trip_preserves_non_pauli_source_ids(tmp_path):
         SemiPBCOp(0, "h", qubits=("q0",), source_id="src-h"),
         SemiPBCOp(1, "alloc", qubit="a0", basis="zero", source_id="src-alloc"),
         SemiPBCOp(2, "release", qubit="a0", source_id="src-release"),
-        SemiPBCOp(3, "xor", target="src0", terms=("c0",), const=1, source_id="src-xor"),
+        SemiPBCOp(3, "xor", target="src0", terms=(), const=1, source_id="src-xor"),
     ]
     write_jsonl(path, header, ops)
     assert read_jsonl(path) == (header, ops)
@@ -60,12 +66,17 @@ def test_direct_clifford_list_qubits_canonicalize_and_round_trip(tmp_path):
 def test_direct_xor_list_terms_canonicalize_and_round_trip(tmp_path):
     path = tmp_path / "direct_xor.semi_pbc.jsonl"
     header = SemiPBCHeader(k=1, data_qubits=1)
-    op = SemiPBCOp(0, "xor", target="src0", terms=["c0"])
+    measurement = SemiPBCOp.measurement(
+        0,
+        PauliTerm.from_pairs([("q0", "Z")]),
+        result="c0",
+    )
+    op = SemiPBCOp(1, "xor", target="src0", terms=["c0"])
 
     assert op.terms == ("c0",)
 
-    write_jsonl(path, header, [op])
-    assert read_jsonl(path) == (header, [op])
+    write_jsonl(path, header, [measurement, op])
+    assert read_jsonl(path) == (header, [measurement, op])
 
 
 def test_write_jsonl_rejects_non_monotonic_ids(tmp_path):
@@ -118,6 +129,105 @@ def test_read_jsonl_rejects_malformed_operation_record(tmp_path):
         '{"id":0,"op":"m_pauli","terms":[["q0","Z"]]}\n'
     )
     with pytest.raises(ValueError, match="result"):
+        read_jsonl(path)
+
+
+def test_read_jsonl_rejects_ancilla_use_before_alloc(tmp_path):
+    path = tmp_path / "bad_ancilla_lifetime.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n'
+        '{"id":0,"op":"h","qubits":["a0"]}\n'
+    )
+    with pytest.raises(ValueError, match="allocated|ancilla"):
+        read_jsonl(path)
+
+
+def test_read_jsonl_rejects_ancilla_use_after_release(tmp_path):
+    path = tmp_path / "bad_ancilla_release.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n'
+        '{"id":0,"op":"alloc","qubit":"a0","basis":"zero"}\n'
+        '{"id":1,"op":"release","qubit":"a0"}\n'
+        '{"id":2,"op":"h","qubits":["a0"]}\n'
+    )
+    with pytest.raises(ValueError, match="allocated|ancilla"):
+        read_jsonl(path)
+
+
+def test_read_jsonl_rejects_out_of_order_ancilla_allocation(tmp_path):
+    path = tmp_path / "bad_ancilla_order.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n'
+        '{"id":0,"op":"alloc","qubit":"a1","basis":"zero"}\n'
+    )
+    with pytest.raises(ValueError, match="allocation order|a0"):
+        read_jsonl(path)
+
+
+def test_validate_program_rejects_unreleased_ancilla_at_end():
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    ops = [SemiPBCOp.alloc(0, "a0")]
+
+    with pytest.raises(ValueError, match="release|active|ancilla"):
+        validate_program(header, ops)
+
+
+def test_validate_program_allows_release_after_uncomputed_ancilla_use():
+    header = SemiPBCHeader(k=1, data_qubits=1)
+    ops = [
+        SemiPBCOp.alloc(0, "a0"),
+        SemiPBCOp.clifford(1, "h", ("a0",)),
+        SemiPBCOp.clifford(2, "h", ("a0",)),
+        SemiPBCOp.release(3, "a0"),
+    ]
+
+    validate_program(header, ops)
+
+
+def test_read_jsonl_allows_release_after_uncomputed_ancilla_use(tmp_path):
+    path = tmp_path / "uncomputed_ancilla_release.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n'
+        '{"id":0,"op":"alloc","qubit":"a0","basis":"zero"}\n'
+        '{"id":1,"op":"cx","qubits":["q0","a0"]}\n'
+        '{"id":2,"op":"cx","qubits":["q0","a0"]}\n'
+        '{"id":3,"op":"release","qubit":"a0"}\n'
+    )
+
+    header, ops = read_jsonl(path)
+    assert header == SemiPBCHeader(k=1, data_qubits=1)
+    assert [op.op for op in ops] == ["alloc", "cx", "cx", "release"]
+
+
+def test_read_jsonl_rejects_undefined_classical_input(tmp_path):
+    path = tmp_path / "bad_classical_dataflow.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n'
+        '{"id":0,"op":"xor","target":"src0","terms":["c0"],"const":0}\n'
+    )
+    with pytest.raises(ValueError, match="defined|classical|c0"):
+        read_jsonl(path)
+
+
+def test_read_jsonl_rejects_duplicate_classical_definitions(tmp_path):
+    path = tmp_path / "bad_classical_duplicate.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n'
+        '{"id":0,"op":"m_pauli","terms":[["q0","Z"]],"sign":1,"result":"c0"}\n'
+        '{"id":1,"op":"m_pauli","terms":[["q0","Z"]],"sign":1,"result":"c0"}\n'
+    )
+    with pytest.raises(ValueError, match="already defined|c0"):
+        read_jsonl(path)
+
+
+def test_read_jsonl_rejects_duplicate_xor_terms(tmp_path):
+    path = tmp_path / "bad_duplicate_xor_terms.jsonl"
+    path.write_text(
+        '{"format":"semi-pbc","version":1,"k":1,"data_qubits":1}\n'
+        '{"id":0,"op":"m_pauli","terms":[["q0","Z"]],"sign":1,"result":"c0"}\n'
+        '{"id":1,"op":"xor","target":"src0","terms":["c0","c0"],"const":0}\n'
+    )
+    with pytest.raises(ValueError, match="duplicate|xor"):
         read_jsonl(path)
 
 

@@ -6,9 +6,7 @@ from pathlib import Path
 
 from ftcircuitbench.semi_pbc.pauli import PauliTerm
 
-_PBC_OP_RE = re.compile(
-    r"\A(?P<op>t_pauli|m_pauli)\s+(?P<pauli>[+-][IXYZ]+)\s*;\Z"
-)
+_PBC_OP_RE = re.compile(r"\A(?P<op>t_pauli|m_pauli)\s+(?P<pauli>[+-][IXYZ]+)\s*;?\Z")
 _QREG_RE = re.compile(r"\Aqreg\s+q\[(?P<data_qubits>0|[1-9][0-9]*)\]\s*;\Z")
 _BOILERPLATE_RE = re.compile(
     r'\A(?:OPENQASM\s+[0-9]+(?:\.[0-9]+)?|include\s+"[^"]+"|'
@@ -66,11 +64,16 @@ def parse_pbc_text(text: str) -> PBCProgram:
                     f"not match data qubit length {data_qubits}"
                 )
             source_id = f"line{line_number}"
+            term = PauliTerm.from_full_width(signed_pauli, source_id=source_id)
+            if term.weight < 1:
+                raise ValueError(
+                    f"line {line_number}: identity Pauli operation has weight 0"
+                )
             ops.append(
                 SourcePBCOp(
                     id=len(ops),
                     op=op_match.group("op"),
-                    term=PauliTerm.from_full_width(signed_pauli, source_id=source_id),
+                    term=term,
                     source_id=source_id,
                 )
             )

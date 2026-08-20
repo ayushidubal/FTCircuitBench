@@ -60,6 +60,17 @@ def test_reducer_drops_only_prior_measurements_invalidated_by_intervening_t_rota
     assert reduced[3].result_terms == ("src2",)
 
 
+def test_reducer_drops_prior_measurement_invalidated_by_intervening_measurement():
+    ops = [
+        src(0, "m_pauli", "+ZI"),
+        src(1, "m_pauli", "+XI"),
+        src(2, "m_pauli", "+ZZ"),
+    ]
+    reduced = reduce_measurements(ops, greedy_order=1)
+    assert reduced[2].used_source_ids == ()
+    assert reduced[2].term.pairs == (("q0", "Z"), ("q1", "Z"))
+
+
 def test_reducer_allows_prior_measurement_across_commuting_t_rotation():
     ops = [
         src(0, "m_pauli", "+ZZI"),
@@ -69,6 +80,17 @@ def test_reducer_allows_prior_measurement_across_commuting_t_rotation():
     reduced = reduce_measurements(ops, greedy_order=1)
     assert reduced[2].term.pairs == (("q2", "Z"),)
     assert reduced[2].used_source_ids == ("line0",)
+
+
+def test_reducer_applies_sign_adjustment_from_real_pauli_phase():
+    ops = [
+        src(0, "m_pauli", "+YYZ"),
+        src(1, "m_pauli", "+XXZ"),
+    ]
+    reduced = reduce_measurements(ops, greedy_order=1)
+    assert reduced[1].term.pairs == (("q0", "Z"), ("q1", "Z"))
+    assert reduced[1].result_terms == ("src0",)
+    assert reduced[1].result_const == 1
 
 
 def test_greedy_order_zero_only_considers_most_recent_eligible_measurement():
@@ -94,6 +116,21 @@ def test_greedy_order_two_can_use_pair_when_singletons_do_not_help():
     assert reduced_two[2].used_source_ids == ("line0", "line1")
     assert reduced_two[2].result_terms == ("src0", "src1")
     assert reduced_two[2].term.pairs == (("q2", "Z"),)
+
+
+def test_greedy_order_two_allows_real_pair_product_with_imaginary_prefixes():
+    ops = [
+        src(0, "m_pauli", "+YIII"),
+        src(1, "m_pauli", "+IYZZ"),
+        src(2, "m_pauli", "+XXZZ"),
+    ]
+
+    reduced = reduce_measurements(ops, greedy_order=2)
+
+    assert reduced[2].used_source_ids == ("line0", "line1")
+    assert reduced[2].result_terms == ("src0", "src1")
+    assert reduced[2].result_const == 1
+    assert reduced[2].term.pairs == (("q0", "Z"), ("q1", "Z"))
 
 
 def test_reducer_rejects_invalid_greedy_order():
@@ -143,14 +180,15 @@ def test_reducer_composes_prior_result_const_when_mapping_representatives():
     assert reduced[3].result_const == 1
 
 
-def test_reducer_skips_identity_replacement_candidates():
+def test_reducer_uses_identity_replacement_candidates():
     ops = [
         src(0, "m_pauli", "+Z"),
         src(1, "m_pauli", "+Z"),
     ]
     reduced = reduce_measurements(ops, greedy_order=1)
-    assert reduced[1].used_source_ids == ()
-    assert reduced[1].term.pairs == (("q0", "Z"),)
+    assert reduced[1].used_source_ids == ("line0",)
+    assert reduced[1].result_terms == ("src0",)
+    assert reduced[1].term.pairs == ()
 
 
 def test_reducer_xor_cancels_duplicate_result_terms_for_pair_candidates():

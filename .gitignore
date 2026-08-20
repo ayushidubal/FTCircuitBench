@@ -55,6 +55,10 @@ Thumbs.db
 circuit_benchmarks/
 /clifford_t_output/
 /pbc_output/
+/circuit_compiled/
+/ftcircuitbench/circuit_benchmarks_ard/
+/inputs/pbc_nwqec_sample/
+/server_artifact_manifest.txt
 
 # Personal/auxiliary scripts not part of the public package
 misc/

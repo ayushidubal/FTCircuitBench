@@ -20,10 +20,24 @@ def test_parse_nwqec_pbc_text_to_source_ops():
     assert program.ops[1].term.sign == -1
 
 
+def test_parse_accepts_pbc_operations_without_semicolons():
+    program = parse_pbc_text("qreg q[2];\nt_pauli +ZI\nm_pauli -IZ\n")
+
+    assert [op.op for op in program.ops] == ["t_pauli", "m_pauli"]
+    assert program.ops[0].term.pairs == (("q0", "Z"),)
+    assert program.ops[1].term.sign == -1
+
+
 def test_parse_rejects_malformed_pauli_length():
     text = "qreg q[2];\nt_pauli +XYZ;\n"
     with pytest.raises(ValueError, match="length"):
         parse_pbc_text(text)
+
+
+@pytest.mark.parametrize("statement", ["t_pauli +II;", "m_pauli -II;"])
+def test_parse_rejects_identity_pauli_operations(statement):
+    with pytest.raises(ValueError, match="identity|weight"):
+        parse_pbc_text(f"qreg q[2];\n{statement}\n")
 
 
 def test_parse_infers_width_without_qreg_and_skips_comments():

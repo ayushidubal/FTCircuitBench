@@ -23,7 +23,7 @@
 - Create `ftcircuitbench/semi_pbc/pbc_input.py`
   - Parser for existing `nwqec` PBC text files.
 - Create `ftcircuitbench/semi_pbc/lowering.py`
-  - Basis-change helpers and exact Phase 1 parity-network lowering for high-weight rotations/measurements.
+  - Basis-change helpers and exact Phase 1 max-`k` parity-network lowering for high-weight rotations/measurements.
 - Create `ftcircuitbench/semi_pbc/reducer.py`
   - Guarded Peres/Galvao measurement representative reducer.
 - Create `ftcircuitbench/semi_pbc/schedule.py`
@@ -573,16 +573,16 @@ from ftcircuitbench.semi_pbc.lowering import lower_pauli_rotation
 from ftcircuitbench.semi_pbc.pauli import PauliTerm
 
 
-def test_rotation_lowering_uses_basis_changes_and_weight_one_rotation():
-    term = PauliTerm.from_pairs([("q0", "X"), ("q1", "Y"), ("q2", "Z")])
+def test_rotation_lowering_uses_basis_changes_and_max_k_rotation():
+    term = PauliTerm.from_pairs([("q0", "X"), ("q1", "Y"), ("q2", "Z"), ("q3", "X")])
     ops = lower_pauli_rotation(start_id=0, term=term, k=2, source_id="line4")
-    assert [op.op for op in ops] == ["h", "sdg", "h", "cx", "cx", "t_pauli", "cx", "cx", "h", "s", "h"]
-    assert [op.qubits for op in ops if op.op == "cx"] == [("q1", "q0"), ("q2", "q0"), ("q2", "q0"), ("q1", "q0")]
+    assert [op.op for op in ops] == ["h", "sdg", "h", "h", "cx", "cx", "t_pauli", "cx", "cx", "h", "h", "s", "h"]
+    assert [op.qubits for op in ops if op.op == "cx"] == [("q2", "q0"), ("q3", "q0"), ("q3", "q0"), ("q2", "q0")]
     t_ops = [op for op in ops if op.op == "t_pauli"]
     assert len(t_ops) == 1
-    assert t_ops[0].term.pairs == (("q0", "Z"),)
+    assert t_ops[0].term.pairs == (("q0", "Z"), ("q1", "Z"))
     assert t_ops[0].source_id == "line4"
-    assert max((op.term.weight for op in ops if op.op in {"t_pauli", "m_pauli"}), default=0) <= 1
+    assert max((op.term.weight for op in ops if op.op in {"t_pauli", "m_pauli"}), default=0) == 2
 
 
 def test_rotation_passes_through_when_weight_within_k():
@@ -622,8 +622,9 @@ Implementation details:
 - if `term.weight <= k`, emit one `t_pauli`
 - else:
   - basis changes in canonical term order
-  - CNOT chain into the first active qubit
-  - one weight-1 `t_pauli` on that target with original sign
+  - keep the first `k` active qubits as the retained legal block
+  - CNOT every remaining active qubit into the first retained qubit
+  - one weight-`k` `t_pauli` on the retained block with original sign
   - reverse CNOT chain
   - inverse basis changes in reverse basis order
 - use sequential IDs starting at `start_id`
@@ -642,8 +643,8 @@ Extend `tests/test_semi_pbc_lowering.py`:
 from ftcircuitbench.semi_pbc.lowering import lower_pauli_measurement
 
 
-def test_measurement_lowering_uses_ancilla_and_xor_for_negative_sign():
-    term = PauliTerm.from_pairs([("q0", "X"), ("q1", "Z"), ("q2", "Z")], sign=-1)
+def test_measurement_lowering_uses_max_k_data_measurement_and_xor():
+    term = PauliTerm.from_pairs([("q0", "X"), ("q1", "Z"), ("q2", "Z"), ("q3", "Z")], sign=-1)
     lowered = lower_pauli_measurement(
         start_id=0,
         term=term,
@@ -654,15 +655,15 @@ def test_measurement_lowering_uses_ancilla_and_xor_for_negative_sign():
         next_classical=0,
     )
     ops = lowered.ops
-    assert lowered.next_ancilla == 1
+    assert lowered.next_ancilla == 0
     assert lowered.next_classical == 1
-    assert [op.op for op in ops] == ["alloc", "h", "cx", "cx", "cx", "m_pauli", "h", "release", "xor"]
-    assert [op.qubits for op in ops if op.op == "cx"] == [("q0", "a0"), ("q1", "a0"), ("q2", "a0")]
+    assert [op.op for op in ops] == ["h", "cx", "cx", "m_pauli", "cx", "cx", "h", "xor"]
+    assert [op.qubits for op in ops if op.op == "cx"] == [("q2", "q0"), ("q3", "q0"), ("q3", "q0"), ("q2", "q0")]
     measure = [op for op in ops if op.op == "m_pauli"][0]
     assert measure.result == "c0"
     assert measure.source_id == "line4"
     assert measure.term.sign == 1
-    assert measure.term.pairs == (("a0", "Z"),)
+    assert measure.term.pairs == (("q0", "Z"), ("q1", "Z"))
     xor = ops[-1]
     assert xor.target == "src4"
     assert xor.terms == ("c0",)
@@ -739,7 +740,7 @@ Implementation details:
 - allocate physical classical bit `c<N>` for every measurement
 - normalize all emitted physical measurements to positive sign
 - if `term.weight <= k`, emit physical `m_pauli +P` plus `xor` mapping to the source result
-- if `term.weight > k`, allocate `a<N>`, basis-change data qubits, CNOT all active data qubits into the ancilla, measure `+Z` on the ancilla, undo data basis changes, release ancilla, emit source-result `xor`
+- if `term.weight > k`, basis-change data qubits, keep the first `k` active qubits as the retained legal block, CNOT every remaining active qubit into the first retained qubit, measure the retained positive Z block, uncompute, undo data basis changes, and emit source-result `xor`
 - for negative signed source measurements, set `xor.const = 1`
 - return updated ancilla/classical counters
 
@@ -1046,6 +1047,7 @@ def test_compute_summary_reports_unique_allocated_ancillas():
     ]
     summary = compute_summary(header, ops, input_op_count=1, max_input_weight=2)
     assert summary["ancilla_count"] == 2
+    assert summary["max_live_ancillas"] == 1
 ```
 
 - [ ] **Step 2: Run test to verify failure**
@@ -1074,10 +1076,11 @@ Create `ftcircuitbench/semi_pbc/schedule.py`:
   - `max_input_weight`
   - `max_output_weight`
   - `ancilla_count`
+  - `max_live_ancillas`
   - `latency_weighted_depth`
   - `latency_model: "phase1_default"`
 
-`ancilla_count` means the number of unique allocated ancilla IDs in the emitted IR. Phase 1 computes conservative sequential latency-weighted depth; commutation-layer reconstruction is future work, not part of this task.
+`ancilla_count` means the number of unique allocated ancilla IDs in the emitted IR. `max_live_ancillas` means the peak simultaneously live ancillas and is the metric enforced by finite `ancilla_budget` values. Phase 1 computes conservative sequential latency-weighted depth; commutation-layer reconstruction is future work, not part of this task.
 
 - [ ] **Step 4: Run summary tests**
 
@@ -1166,7 +1169,7 @@ Pipeline:
 Counter rules:
 
 - operation IDs increment monotonically across emitted quantum/classical ops
-- measurement lowering owns `next_ancilla` and `next_classical`
+- measurement lowering owns `next_ancilla` and `next_classical`; the Phase 1 max-`k` data-compression strategy updates only the classical counter for high-weight measurements because it does not allocate ancillas
 - pass-through measurements still emit physical `m_pauli -> cN` and `xor srcN = cN xor sign_adjust`
 - source result names are `src<source op id>`
 - when a `ReducedSourceOp` has `result_terms` or `result_const`, pipeline updates the final `xor` emitted by `lower_pauli_measurement` so that:
@@ -1205,9 +1208,11 @@ def test_compile_rejects_unsupported_reducer_option():
         compile_pbc_text("qreg q[1];\nt_pauli +Z;\n", k=1, measurement_reducer="bad")
 
 
-def test_compile_rejects_finite_ancilla_budget_exhaustion():
-    with pytest.raises(ValueError, match="ancilla"):
-        compile_pbc_text("qreg q[2];\nm_pauli +ZZ;\n", k=1, ancilla_budget=0)
+def test_compile_allows_zero_ancilla_budget_for_data_compression():
+    result = compile_pbc_text("qreg q[2];\nm_pauli +ZZ;\n", k=1, ancilla_budget=0)
+    assert result.summary["max_output_weight"] == 1
+    assert result.summary["ancilla_count"] == 0
+    assert result.summary["max_live_ancillas"] == 0
 
 
 def test_compile_rejects_unsupported_strategy_options():
@@ -1335,8 +1340,8 @@ Create `compile_semi_pbc.py`:
 - call `compile_pbc_file`
 - write JSONL via `write_jsonl`
 - write summary JSON if requested
-- write sidecar JSON if `--emit-sidecar` or `--sidecar` is provided
-- if `--emit-sidecar` is provided without `--sidecar`, write `<out>.sidecar.json`
+- write sidecar JSON by default; `--sidecar` overrides the destination and `--emit-sidecar` is accepted for explicitness
+- if no `--sidecar` is provided, write `<out>.sidecar.json`
 - print one concise line:
 
 ```text
@@ -1354,10 +1359,11 @@ Expected: PASS.
 Run:
 
 ```bash
+printf 'qreg q[3];\nt_pauli +ZZZ;\nm_pauli -XZI;\n' > /tmp/semi_pbc_smoke_k2.pbc
 python3 compile_semi_pbc.py \
-  --pbc FTCircuitBench/ftcircuitbench/circuit_benchmarks_ard/qft/qft_4q/GS/precision_level_3/qft_4q_gs_prec3_pbc_post_opt.txt \
-  --out /tmp/qft_4q_k2.semi_pbc.jsonl \
-  --summary /tmp/qft_4q_k2.semi_pbc.summary.json \
+  --pbc /tmp/semi_pbc_smoke_k2.pbc \
+  --out /tmp/semi_pbc_smoke_k2.semi_pbc.jsonl \
+  --summary /tmp/semi_pbc_smoke_k2.semi_pbc.summary.json \
   --k 2
 ```
 
@@ -1428,14 +1434,15 @@ Expected: PASS.
 Run:
 
 ```bash
+printf 'qreg q[3];\nt_pauli +XYZ;\nm_pauli -ZZZ;\n' > /tmp/semi_pbc_smoke_k1.pbc
 python3 compile_semi_pbc.py \
-  --pbc FTCircuitBench/ftcircuitbench/circuit_benchmarks_ard/qft/qft_4q/GS/precision_level_3/qft_4q_gs_prec3_pbc_post_opt.txt \
-  --out /tmp/qft_4q_k1.semi_pbc.jsonl \
-  --summary /tmp/qft_4q_k1.semi_pbc.summary.json \
+  --pbc /tmp/semi_pbc_smoke_k1.pbc \
+  --out /tmp/semi_pbc_smoke_k1.semi_pbc.jsonl \
+  --summary /tmp/semi_pbc_smoke_k1.semi_pbc.summary.json \
   --k 1
 ```
 
-Expected: exits `0`; `/tmp/qft_4q_k1.semi_pbc.summary.json` reports `"max_output_weight": 1`.
+Expected: exits `0`; `/tmp/semi_pbc_smoke_k1.semi_pbc.summary.json` reports `"max_output_weight": 1`.
 
 - [ ] **Step 5: Commit any final integration fixes**
 

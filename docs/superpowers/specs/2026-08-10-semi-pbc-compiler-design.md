@@ -87,28 +87,30 @@ The useful part for us is the pass structure: bounded rewrites, explicit layers,
 
 [Moflic and Paler 2026](https://www.nature.com/articles/s41534-026-01226-x) gives a depth-oriented construction for Pauli exponentials using two-body interactions and `O(r)` ancillas. This is a strong candidate for optimized high-weight rotation lowering, especially for `k = 2`.
 
-For a first correct implementation, the baseline lowering for a high-weight `pi/8` Pauli rotation should be the standard parity-network construction:
+For a first correct implementation, the baseline lowering for a high-weight `pi/8` Pauli rotation should be a bounded parity-network construction that keeps the largest legal Pauli block:
 
 1. Apply 1-qubit Cliffords to map the Pauli word to a Z-parity.
-2. Use CNOTs and optional ancillas to compute the parity.
-3. Apply one 1-qubit `pi/8` rotation.
-4. Uncompute the parity and undo basis changes.
+2. Keep `k` active qubits as the retained legal block.
+3. Use CNOTs to coherently fold every remaining active qubit into one retained target qubit.
+4. Apply one `pi/8` Pauli rotation on the retained weight-`k` Z block.
+5. Uncompute the parity and undo basis changes.
 
-This is exact and legal for any `k >= 1`, but it may not be depth-optimal.
+This is exact and legal for any `k >= 1`. For an input weight `r > k`, it emits one weight-`k` Pauli rotation rather than always collapsing to weight 1. It may not be depth-optimal.
 
 ### 4.5 Pauli Measurement Lowering
 
 For high-weight Pauli measurements, direct chunk measurement is not generally equivalent because it reveals extra partial-parity information.
 
-The safe baseline is coherent parity extraction:
+The safe baseline is coherent parity compression followed by one bounded joint Pauli measurement:
 
-1. Allocate an ancilla.
-2. Apply basis-change Cliffords on data qubits.
-3. Use CNOTs or a parity tree to accumulate the full parity onto the ancilla.
-4. Measure a weight-1 Pauli on the ancilla.
-5. Undo basis changes when needed.
+1. Apply basis-change Cliffords on data qubits.
+2. Keep `k` active qubits as the retained legal measurement block.
+3. Use CNOTs to fold every remaining active qubit into one retained target qubit.
+4. Measure the retained weight-`k` Z block as a single joint Pauli measurement.
+5. Uncompute the CNOTs and undo basis changes.
+6. Use an explicit classical `xor` to account for the original measurement sign.
 
-This measures only the intended Pauli eigenvalue and is legal for any `k >= 1`.
+This measures only the intended Pauli eigenvalue, does not reveal partial chunk parities, uses no ancilla in the local Phase 1 strategy, and is legal for any `k >= 1`.
 
 Architecture-level sources such as [Parallel Logical Measurements via Quantum Code Surgery](https://arxiv.org/abs/2503.05003), [Homomorphic Logical Measurements](https://arxiv.org/abs/2211.03625), and [Extractors](https://arxiv.org/abs/2503.10390) are useful for future routing and layout choices, but they should not be the first compiler lowering algorithm.
 
@@ -159,6 +161,8 @@ The first line is a header:
 ```
 
 Each following line is one operation. IDs are monotonically increasing integers. Data qubits are named `q0`, `q1`, ... from the input PBC width. Ancillas are named `a0`, `a1`, ... in allocation order. Classical bits are named `c0`, `c1`, ... in creation order. Source measurement results may also be named `src<N>` through `xor` operations.
+
+Ancilla names are logical allocation IDs, not a direct physical resource count. Phase 1 emits a fresh `aN` for each allocation to keep lifetimes and provenance unambiguous. Resource budgeting is based on peak simultaneously live ancillas, so sequential gadgets that allocate `a0`, release it, then allocate `a1` require one live ancilla even though they use two logical allocation IDs.
 
 Pauli terms are sparse arrays. Identity factors are omitted. Duplicate qubit entries in a term are invalid.
 
@@ -212,7 +216,7 @@ The source IR should be sequential and sufficient for correctness. A sidecar may
 - gadget boundaries
 - dependency edges
 - commutation layers
-- ancilla counts
+- ancilla counts, including total logical allocations and peak live ancillas
 - lowering strategy per operation
 - cost-model settings
 
@@ -290,25 +294,25 @@ t_pauli sign P(q0, q1, ..., q{r-1})
 where `r > k`, Phase 1 emits:
 
 1. Basis changes on all active qubits.
-2. A CNOT parity chain into the first active qubit `q0`:
+2. A CNOT parity chain from active qubits beyond the retained block into the first retained qubit `q0`:
 
    ```text
-   cx q1, q0
-   cx q2, q0
+   cx qk, q0
+   cx q{k+1}, q0
    ...
    cx q{r-1}, q0
    ```
 
-3. A weight-1 rotation:
+3. A rotation on the retained legal block:
 
    ```text
-   t_pauli sign Z q0
+   t_pauli sign Z q0 Z q1 ... Z q{k-1}
    ```
 
 4. The same CNOT chain in reverse order.
 5. Inverse basis changes.
 
-This is exact, uses no ancilla by default, and satisfies the hard cap for any `k >= 1`.
+This is exact, uses no ancilla by default, and satisfies the hard cap for any `k >= 1`. When `r > k`, the emitted Pauli block has weight exactly `k`, so the compiler uses the largest legal retained block.
 
 If an ancilla-budgeted tree strategy is added later, it must be a separate lowering option with its own equivalence tests.
 
@@ -322,30 +326,31 @@ m_pauli sign P(q0, q1, ..., q{r-1}) -> src
 
 where `r > k`, Phase 1 emits:
 
-1. Allocate a fresh ancilla `aN` in `|0>`.
-2. Basis changes on all active data qubits.
-3. CNOTs from each active data qubit into the ancilla:
+1. Basis changes on all active data qubits.
+2. CNOTs from each active data qubit beyond the retained block into the first retained qubit `q0`:
 
    ```text
-   cx q0, aN
-   cx q1, aN
+   cx qk, q0
+   cx q{k+1}, q0
    ...
-   cx q{r-1}, aN
+   cx q{r-1}, q0
    ```
 
-4. A weight-1 measurement:
+3. A single bounded joint measurement on the retained legal block:
 
    ```text
-   m_pauli + Z aN -> c_raw
+   m_pauli + Z q0 Z q1 ... Z q{k-1} -> c_raw
    ```
 
+4. The same CNOT chain in reverse order.
 5. Inverse basis changes on data qubits.
-6. Release the ancilla.
-7. Emit an `xor` mapping for the original source result:
+6. Emit an `xor` mapping for the original source result:
 
    ```text
    src = c_raw xor (1 if original sign is -1 else 0)
    ```
+
+This is the measurement analogue of the rotation lowering: it keeps the largest legal Pauli block and coherently compresses the rest into that block before measuring. It does not allocate an ancilla in Phase 1.
 
 This measures only the intended full Pauli eigenvalue. It does not measure chunk parities, because chunk measurements would generally reveal extra information and change the computation.
 
@@ -424,14 +429,21 @@ measurement-lowering = coherent-parity
 emit-sidecar = true
 ```
 
+The Phase 1 `"coherent-parity"` measurement lowering is data-qubit parity compression into a bounded joint measurement block. It is not an ancilla-only single-qubit extraction strategy, although such a strategy can be added later as a separate option.
+
 `moflic-paler-k2` is not part of Phase 1. It should be specified separately after the baseline compiler is validated.
+
+`--ancilla-budget N` constrains the maximum number of simultaneously live ancillas, not the total number of logical `aN` allocation IDs emitted over the program. The summary should report both:
+
+- `ancilla_count`: total unique logical ancilla allocation IDs in the emitted IR
+- `max_live_ancillas`: peak simultaneously live ancillas, which is the value checked against a finite budget
 
 Error behavior:
 
 - reject `k < 1`
 - reject unsupported Pauli signs or rotation angles
 - reject malformed input terms and duplicate non-identity terms on one qubit
-- reject finite `--ancilla-budget` if the selected lowering would exceed it
+- reject finite `--ancilla-budget` if the selected lowering's peak live ancilla requirement would exceed it
 - fail after lowering if any emitted `t_pauli` or `m_pauli` still has weight `> k`
 - reject incompatible options instead of silently changing strategy
 
@@ -458,7 +470,7 @@ Existing `dascot-rs` is fast for C+T-shaped circuits and currently represents op
 
 The practical routing plan is:
 
-1. **Short-term:** Emit semi-PBC and a fully lowered fallback form for small local correctness/routing smoke tests. The fallback may lower high-weight Pauli structure into Cliffords plus weight-1 rotations/measurements; it is for validation and format integration, not the final performance target.
+1. **Short-term:** Emit semi-PBC and a fully lowered fallback form for small local correctness/routing smoke tests. The fallback may lower high-weight Pauli structure into Cliffords plus bounded Pauli rotations/measurements; it is for validation and format integration, not the final performance target.
 2. **Medium-term:** Extend `dascot-rs` with bounded `PauliRot` and `PauliMeasurement` operation variants.
 3. **Use Amaro/MQLSS as reference:** Port the useful bounded Pauli routing primitive into `dascot-rs` rather than writing a separate solver from scratch.
 
@@ -499,7 +511,7 @@ Given an existing `nwqec` PBC file and a valid `k`, Phase 1 is complete when it 
 4. Preserve source measurement semantics through explicit physical result bits and `xor` mappings.
 5. Run small equivalence tests for high-weight rotation and measurement lowerings.
 6. Run guarded reducer tests showing both accepted safe replacements and rejected unsafe candidates.
-7. Produce a summary report with input op count, output op count, max input weight, max output weight, ancilla count, and latency-weighted depth.
+7. Produce a summary report with input op count, output op count, max input weight, max output weight, total logical ancilla count, peak live ancilla count, and latency-weighted depth.
 
 ## 12. Non-Goals
 
@@ -517,8 +529,8 @@ This design does not include:
 
 The implementation should leave room for:
 
-1. Better high-weight measurement lowerings that use bounded Pauli measurements without revealing extra information.
-2. A practical `k > 2` lowering strategy that uses larger legal Pauli blocks to reduce CNOT count and depth.
+1. Depth- and routing-optimized high-weight measurement lowerings, including ancilla-assisted trees and layout-aware retained-block choices.
+2. Global `k > 2` strategies that choose retained blocks and reducer representatives to reduce CNOT count, depth, and routing cost.
 3. A direct C+T -> semi-PBC optimizer that searches over Clifford-retention versus Pauli-block absorption.
 4. A router-aware cost model that accounts for decoder latency after placement and routing.
 

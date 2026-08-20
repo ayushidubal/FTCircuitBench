@@ -284,6 +284,7 @@ def write_jsonl(
     output_path = Path(path)
     temp_path: Path | None = None
     last_id: int | None = None
+    state = _ProgramValidationState()
     try:
         with tempfile.NamedTemporaryFile(
             "w",
@@ -301,7 +302,9 @@ def write_jsonl(
                         "operation ids must be strictly monotonically increasing"
                     )
                 last_id = op.id
+                _validate_program_op(op, header, state)
                 output.write(_json_line(op.to_record()))
+            _validate_program_complete(state)
         temp_path.replace(output_path)
     except BaseException:
         if temp_path is not None:
@@ -314,6 +317,7 @@ def read_jsonl(path: str | Path) -> tuple[SemiPBCHeader, list[SemiPBCOp]]:
     header: SemiPBCHeader | None = None
     ops: list[SemiPBCOp] = []
     last_id: int | None = None
+    state = _ProgramValidationState()
     with input_path.open() as input_file:
         for line_number, line in enumerate(input_file, start=1):
             record = _json_record_from_line(line, line_number)
@@ -330,10 +334,24 @@ def read_jsonl(path: str | Path) -> tuple[SemiPBCHeader, list[SemiPBCOp]]:
                     "monotonically increasing"
                 )
             last_id = op.id
+            _with_line_context(line_number, _validate_program_op, op, header, state)
             ops.append(op)
     if header is None:
         raise ValueError("semi-PBC JSONL file is empty")
+    _validate_program_complete(state)
     return header, ops
+
+
+def validate_program(header: SemiPBCHeader, ops: Iterable[SemiPBCOp]) -> None:
+    state = _ProgramValidationState()
+    last_id: int | None = None
+    for op in ops:
+        op.validate(header)
+        if last_id is not None and op.id <= last_id:
+            raise ValueError("operation ids must be strictly monotonically increasing")
+        last_id = op.id
+        _validate_program_op(op, header, state)
+    _validate_program_complete(state)
 
 
 def _json_record_from_line(line: str, line_number: int) -> dict[str, Any]:
@@ -365,6 +383,92 @@ def _json_record(line: str, line_number: int) -> dict[str, Any]:
 
 def _json_line(record: dict[str, Any]) -> str:
     return json.dumps(record, separators=(",", ":")) + "\n"
+
+
+@dataclass
+class _ProgramValidationState:
+    active_ancillas: set[str] | None = None
+    next_ancilla: int = 0
+    defined_physical: set[str] | None = None
+    defined_source: set[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.active_ancillas is None:
+            self.active_ancillas = set()
+        if self.defined_physical is None:
+            self.defined_physical = set()
+        if self.defined_source is None:
+            self.defined_source = set()
+
+
+def _validate_program_op(
+    op: SemiPBCOp, header: SemiPBCHeader, state: _ProgramValidationState
+) -> None:
+    if op.op == "alloc":
+        expected = f"a{state.next_ancilla}"
+        if op.qubit != expected:
+            raise ValueError(
+                f"ancilla allocation order requires {expected}, got {op.qubit}"
+            )
+        state.active_ancillas.add(op.qubit)
+        state.next_ancilla += 1
+        return
+
+    if op.op == "release":
+        _require_active_ancilla(op.qubit, state)
+        state.active_ancillas.remove(op.qubit)
+        return
+
+    for qubit in _op_qubits(op):
+        if _ANCILLA_QUBIT_RE.fullmatch(qubit):
+            _require_active_ancilla(qubit, state)
+
+    if op.op == "m_pauli":
+        expected = f"c{len(state.defined_physical)}"
+        if op.result != expected:
+            raise ValueError(
+                f"classical bits must be created in order; expected {expected}, "
+                f"got {op.result}"
+            )
+        if op.result in state.defined_physical:
+            raise ValueError(f"classical bit {op.result} is already defined")
+        state.defined_physical.add(op.result)
+        return
+
+    if op.op == "xor":
+        if op.target in state.defined_source:
+            raise ValueError(f"source result {op.target} is already defined")
+        for term in op.terms:
+            if (
+                _PHYSICAL_CLASSICAL_RE.fullmatch(term)
+                and term not in state.defined_physical
+            ):
+                raise ValueError(f"classical input {term} is not defined")
+            if (
+                _SOURCE_CLASSICAL_RE.fullmatch(term)
+                and term not in state.defined_source
+            ):
+                raise ValueError(f"source input {term} is not defined")
+        state.defined_source.add(op.target)
+
+
+def _validate_program_complete(state: _ProgramValidationState) -> None:
+    if state.active_ancillas:
+        ancillas = ", ".join(sorted(state.active_ancillas))
+        raise ValueError(f"active ancilla(s) must be released before EOF: {ancillas}")
+
+
+def _op_qubits(op: SemiPBCOp) -> tuple[str, ...]:
+    if op.op in _CLIFFORD_OPS:
+        return op.qubits
+    if op.op in {"t_pauli", "m_pauli"} and op.term is not None:
+        return tuple(qubit for qubit, _pauli in op.term.pairs)
+    return ()
+
+
+def _require_active_ancilla(qubit: str | None, state: _ProgramValidationState) -> None:
+    if qubit not in state.active_ancillas:
+        raise ValueError(f"ancilla {qubit} is not allocated")
 
 
 def _reject_unknown_fields(
@@ -444,6 +548,8 @@ def _validate_runtime_shape(op: SemiPBCOp) -> str:
         terms = _validate_schema_str_sequence(op.terms, "terms", "xor term")
         for term in terms:
             _validate_classical_input_id(term, "xor term")
+        if len(set(terms)) != len(terms):
+            raise ValueError("xor terms must not contain duplicate classical ids")
         const = _validate_schema_int(op.const, "xor const")
         if const not in {0, 1}:
             raise ValueError("xor const must be 0 or 1")

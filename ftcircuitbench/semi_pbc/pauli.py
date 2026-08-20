@@ -143,6 +143,12 @@ class PauliTerm:
         return count % 2 == 0
 
     def multiply_real(self, other: PauliTerm) -> PauliTerm:
+        product, phase = self.multiply_with_phase(other)
+        if phase:
+            raise ValueError("Pauli product has imaginary global phase")
+        return product
+
+    def multiply_with_phase(self, other: PauliTerm) -> tuple[PauliTerm, int]:
         merged: dict[str, str] = dict(self.pairs)
         sign = self.sign * other.sign
         phase = 0
@@ -157,8 +163,7 @@ class PauliTerm:
                     del merged[qubit]
                 else:
                     merged[qubit] = product
-        if phase % 2:
-            raise ValueError("Pauli product has imaginary global phase")
-        if phase == 2:
+        if phase >= 2:
             sign *= -1
-        return PauliTerm.from_pairs(merged.items(), sign=sign)
+            phase -= 2
+        return PauliTerm.from_pairs(merged.items(), sign=sign), phase

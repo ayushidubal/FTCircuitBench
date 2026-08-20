@@ -49,7 +49,7 @@ def reduce_measurements(
             eligible = [
                 prior
                 for prior in prior_measurements
-                if _is_eligible(prior, source_ops, current_index=index)
+                if _is_eligible(prior, reduced, current_index=index)
             ]
             candidate = _select_candidate(source_op.term, eligible, greedy_order)
             if candidate is not None:
@@ -84,14 +84,14 @@ def _wrap_source_op(source_op: SourcePBCOp) -> ReducedSourceOp:
 
 def _is_eligible(
     prior: _PriorMeasurement,
-    source_ops: Sequence[SourcePBCOp],
+    reduced_ops: Sequence[ReducedSourceOp],
     *,
     current_index: int,
 ) -> bool:
     return all(
         op.term.commutes_with(prior.op.term)
-        for op in source_ops[prior.index + 1 : current_index]
-        if op.op == "t_pauli"
+        for op in reduced_ops[prior.index + 1 : current_index]
+        if op.op in {"t_pauli", "m_pauli"}
     )
 
 
@@ -104,7 +104,7 @@ def _select_candidate(
         candidate
         for priors in _candidate_prior_groups(eligible, greedy_order)
         if (candidate := _build_candidate(current_term, priors)) is not None
-        and 0 < candidate.term.weight < current_term.weight
+        and candidate.term.weight < current_term.weight
     ]
     if not candidates:
         return None
@@ -129,12 +129,15 @@ def _build_candidate(
     priors: tuple[_PriorMeasurement, ...],
 ) -> _Candidate | None:
     product = current_term
+    phase = 0
     result_terms: set[str] = set()
     result_const = 0
 
     for prior in priors:
         try:
-            product = product.multiply_real(prior.op.term)
+            product, phase = _multiply_with_carried_phase(
+                product, phase, prior.op.term
+            )
         except ValueError:
             return None
         _toggle_result_term(result_terms, f"src{prior.op.id}")
@@ -142,6 +145,8 @@ def _build_candidate(
             _toggle_result_term(result_terms, result_term)
         result_const ^= prior.op.result_const
 
+    if phase:
+        return None
     if product.sign == -1:
         result_const ^= 1
     positive_term = PauliTerm.from_pairs(product.pairs, sign=1)
@@ -151,6 +156,17 @@ def _build_candidate(
         result_const=result_const,
         used_source_ids=tuple(prior.op.source_id for prior in priors),
     )
+
+
+def _multiply_with_carried_phase(
+    product: PauliTerm, phase: int, factor: PauliTerm
+) -> tuple[PauliTerm, int]:
+    product, phase_delta = product.multiply_with_phase(factor)
+    phase += phase_delta
+    if phase >= 2:
+        product = PauliTerm.from_pairs(product.pairs, sign=-product.sign)
+        phase -= 2
+    return product, phase
 
 
 def _toggle_result_term(result_terms: set[str], result_term: str) -> None:

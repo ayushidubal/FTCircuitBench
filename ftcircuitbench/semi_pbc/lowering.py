@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ftcircuitbench.semi_pbc.ir import SemiPBCOp
 from ftcircuitbench.semi_pbc.pauli import PauliTerm
+
+_SOURCE_CLASSICAL_RE = re.compile(r"src(?:0|[1-9][0-9]*)\Z")
 
 
 @dataclass(frozen=True)
@@ -44,8 +48,12 @@ def lower_pauli_measurement(
     next_ancilla: int,
     next_classical: int,
 ) -> LoweringResult:
+    _validate_non_negative_int(start_id, "start_id")
     _validate_k(k)
     _validate_non_identity_term(term)
+    _validate_source_result(result)
+    _validate_non_negative_int(next_ancilla, "next_ancilla")
+    _validate_non_negative_int(next_classical, "next_classical")
     c_raw = f"c{next_classical}"
     xor_const = 1 if term.sign == -1 else 0
     if term.weight <= k:
@@ -72,23 +80,19 @@ def lower_pauli_measurement(
 
     ops: list[SemiPBCOp] = []
     next_id = start_id
-    ancilla = f"a{next_ancilla}"
-    active_qubits = [qubit for qubit, _pauli in term.pairs]
+    kept_qubits, extra_qubits = _kept_and_extra_qubits(term, k)
+    target = kept_qubits[0]
 
-    ops.append(SemiPBCOp.alloc(next_id, ancilla, source_id=source_id))
-    next_id += 1
+    next_id = _append_basis_change_ops(ops, next_id, term, source_id)
+    next_id = _append_compression_cx_ops(
+        ops,
+        next_id,
+        extra_qubits=extra_qubits,
+        target=target,
+        source_id=source_id,
+    )
 
-    for op, qubit in _basis_change_ops(term):
-        ops.append(SemiPBCOp.clifford(next_id, op, (qubit,), source_id=source_id))
-        next_id += 1
-
-    for qubit in active_qubits:
-        ops.append(
-            SemiPBCOp.clifford(next_id, "cx", (qubit, ancilla), source_id=source_id)
-        )
-        next_id += 1
-
-    z_term = PauliTerm.from_pairs([(ancilla, "Z")], sign=1)
+    z_term = PauliTerm.from_pairs(((qubit, "Z") for qubit in kept_qubits), sign=1)
     ops.append(
         SemiPBCOp.measurement(
             next_id,
@@ -99,12 +103,16 @@ def lower_pauli_measurement(
     )
     next_id += 1
 
+    next_id = _append_compression_cx_ops(
+        ops,
+        next_id,
+        extra_qubits=reversed(extra_qubits),
+        target=target,
+        source_id=source_id,
+    )
     for op, qubit in _inverse_basis_change_ops(term):
         ops.append(SemiPBCOp.clifford(next_id, op, (qubit,), source_id=source_id))
         next_id += 1
-
-    ops.append(SemiPBCOp.release(next_id, ancilla, source_id=source_id))
-    next_id += 1
 
     ops.append(
         SemiPBCOp.xor(
@@ -117,7 +125,7 @@ def lower_pauli_measurement(
     )
     return LoweringResult(
         ops=ops,
-        next_ancilla=next_ancilla + 1,
+        next_ancilla=next_ancilla,
         next_classical=next_classical + 1,
     )
 
@@ -128,6 +136,7 @@ def lower_pauli_rotation(
     k: int,
     source_id: str | None = None,
 ) -> list[SemiPBCOp]:
+    _validate_non_negative_int(start_id, "start_id")
     _validate_k(k)
     _validate_non_identity_term(term)
     if term.weight <= k:
@@ -135,29 +144,32 @@ def lower_pauli_rotation(
 
     ops: list[SemiPBCOp] = []
     next_id = start_id
-    active_qubits = [qubit for qubit, _pauli in term.pairs]
-    target = active_qubits[0]
+    kept_qubits, extra_qubits = _kept_and_extra_qubits(term, k)
+    target = kept_qubits[0]
 
-    for op, qubit in _basis_change_ops(term):
-        ops.append(SemiPBCOp.clifford(next_id, op, (qubit,), source_id=source_id))
-        next_id += 1
+    next_id = _append_basis_change_ops(ops, next_id, term, source_id)
+    next_id = _append_compression_cx_ops(
+        ops,
+        next_id,
+        extra_qubits=extra_qubits,
+        target=target,
+        source_id=source_id,
+    )
 
-    for qubit in active_qubits[1:]:
-        ops.append(
-            SemiPBCOp.clifford(next_id, "cx", (qubit, target), source_id=source_id)
-        )
-        next_id += 1
-
-    z_term = PauliTerm.from_pairs([(target, "Z")], sign=term.sign)
+    z_term = PauliTerm.from_pairs(
+        ((qubit, "Z") for qubit in kept_qubits),
+        sign=term.sign,
+    )
     ops.append(SemiPBCOp.pauli_rotation(next_id, z_term, source_id=source_id))
     next_id += 1
 
-    for qubit in reversed(active_qubits[1:]):
-        ops.append(
-            SemiPBCOp.clifford(next_id, "cx", (qubit, target), source_id=source_id)
-        )
-        next_id += 1
-
+    next_id = _append_compression_cx_ops(
+        ops,
+        next_id,
+        extra_qubits=reversed(extra_qubits),
+        target=target,
+        source_id=source_id,
+    )
     for op, qubit in _inverse_basis_change_ops(term):
         ops.append(SemiPBCOp.clifford(next_id, op, (qubit,), source_id=source_id))
         next_id += 1
@@ -165,11 +177,56 @@ def lower_pauli_rotation(
     return ops
 
 
+def _kept_and_extra_qubits(term: PauliTerm, k: int) -> tuple[list[str], list[str]]:
+    active_qubits = [qubit for qubit, _pauli in term.pairs]
+    return active_qubits[:k], active_qubits[k:]
+
+
+def _append_basis_change_ops(
+    ops: list[SemiPBCOp],
+    next_id: int,
+    term: PauliTerm,
+    source_id: str | None,
+) -> int:
+    for op, qubit in _basis_change_ops(term):
+        ops.append(SemiPBCOp.clifford(next_id, op, (qubit,), source_id=source_id))
+        next_id += 1
+    return next_id
+
+
+def _append_compression_cx_ops(
+    ops: list[SemiPBCOp],
+    next_id: int,
+    *,
+    extra_qubits: Iterable[str],
+    target: str,
+    source_id: str | None,
+) -> int:
+    for qubit in extra_qubits:
+        ops.append(
+            SemiPBCOp.clifford(next_id, "cx", (qubit, target), source_id=source_id)
+        )
+        next_id += 1
+    return next_id
+
+
 def _validate_k(k: int) -> None:
     if type(k) is not int or k < 1:
         raise ValueError("k must be an integer >= 1")
 
 
+def _validate_non_negative_int(value: int, name: str) -> None:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+
+
+def _validate_source_result(result: str) -> None:
+    if not isinstance(result, str) or _SOURCE_CLASSICAL_RE.fullmatch(result) is None:
+        raise ValueError("result must be a source classical id src<N>")
+
+
 def _validate_non_identity_term(term: PauliTerm) -> None:
+    if not isinstance(term, PauliTerm):
+        raise TypeError("term must be a PauliTerm")
     if term.weight < 1:
         raise ValueError("cannot lower identity Pauli term with weight 0")
