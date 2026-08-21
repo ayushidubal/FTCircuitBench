@@ -28,6 +28,11 @@ def main() -> int:
     )
     parser.add_argument("--greedy-order", default=1, type=int, choices=(0, 1, 2))
     parser.add_argument(
+        "--optimization",
+        default="none",
+        choices=("none", "local-window"),
+    )
+    parser.add_argument(
         "--rotation-lowering",
         default="parity-network",
         choices=("parity-network",),
@@ -53,6 +58,7 @@ def main() -> int:
             objective=args.objective,
             measurement_reducer=args.measurement_reducer,
             greedy_order=args.greedy_order,
+            optimization=args.optimization,
             rotation_lowering=args.rotation_lowering,
             measurement_lowering=args.measurement_lowering,
             ancilla_budget=args.ancilla_budget,

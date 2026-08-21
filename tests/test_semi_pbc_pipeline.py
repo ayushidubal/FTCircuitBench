@@ -1,11 +1,19 @@
 import json
 
+import numpy as np
 import pytest
 
 from ftcircuitbench.semi_pbc.ir import SemiPBCHeader, SemiPBCOp, write_jsonl
 from ftcircuitbench.semi_pbc.pauli import PauliTerm
 from ftcircuitbench.semi_pbc.pipeline import compile_pbc_file, compile_pbc_text
 from ftcircuitbench.semi_pbc.schedule import compute_summary
+from tests.test_semi_pbc_lowering import (
+    assert_allclose_up_to_global_phase,
+    induced_source_projectors,
+    pauli_rotation_matrix,
+    semi_pbc_unitary,
+    signed_pauli_projectors,
+)
 
 
 def test_compute_summary_uses_default_phase1_latencies():
@@ -139,6 +147,84 @@ def test_compile_pbc_text_is_deterministic():
     assert first == second
 
 
+def test_compile_local_window_reduces_adjacent_identical_rotations():
+    text = "qreg q[4];\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\n"
+    baseline = compile_pbc_text(
+        text,
+        k=2,
+        measurement_reducer="none",
+        optimization="none",
+    )
+    optimized = compile_pbc_text(
+        text,
+        k=2,
+        measurement_reducer="none",
+        optimization="local-window",
+    )
+
+    assert baseline.summary["output_op_count"] == 10
+    assert optimized.summary["output_op_count"] == 6
+    assert optimized.summary["optimization"] == "local-window"
+    assert optimized.summary["max_output_weight"] == 2
+    assert [op.op for op in optimized.ops] == [
+        "cx",
+        "cx",
+        "t_pauli",
+        "t_pauli",
+        "cx",
+        "cx",
+    ]
+
+
+def test_compile_local_window_rotation_unitary_matches_source_after_cancellation():
+    term = PauliTerm.from_full_width("+ZZZZ")
+    result = compile_pbc_text(
+        "qreg q[4];\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\n",
+        k=2,
+        measurement_reducer="none",
+        optimization="local-window",
+    )
+
+    single_rotation = pauli_rotation_matrix(term, data_qubits=4)
+    original = single_rotation @ single_rotation
+    compiled = semi_pbc_unitary(result.ops, data_qubits=4)
+    assert_allclose_up_to_global_phase(compiled, original)
+
+
+def test_compile_local_window_measurement_projectors_match_source():
+    term = PauliTerm.from_full_width("-ZZZZ")
+    result = compile_pbc_text(
+        "qreg q[4];\nm_pauli -ZZZZ;\n",
+        k=2,
+        measurement_reducer="none",
+        optimization="local-window",
+    )
+
+    expected_zero, expected_one = signed_pauli_projectors(term, data_qubits=4)
+    actual_zero, actual_one = induced_source_projectors(
+        result.ops,
+        source="src0",
+        data_qubits=4,
+    )
+    assert np.allclose(actual_zero, expected_zero)
+    assert np.allclose(actual_one, expected_one)
+
+
+def test_compile_local_window_filters_sidecar_after_cancellation():
+    result = compile_pbc_text(
+        "qreg q[4];\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\n",
+        k=2,
+        measurement_reducer="none",
+        optimization="local-window",
+        emit_sidecar=True,
+    )
+    op_ids = {op.id for op in result.ops}
+    sidecar_ids = {record["id"] for record in result.sidecar["provenance"]}
+
+    assert sidecar_ids == op_ids
+    assert result.sidecar["optimization"] == "local-window"
+
+
 def test_compile_pbc_file_reads_source_path(tmp_path):
     path = tmp_path / "toy.pbc"
     path.write_text("qreg q[1];\nt_pauli +Z;\n")
@@ -223,6 +309,8 @@ def test_compile_emits_only_xor_for_identity_reduced_measurement():
 def test_compile_rejects_unsupported_strategy_options():
     with pytest.raises(ValueError, match="objective"):
         compile_pbc_text("qreg q[1];\nt_pauli +Z;\n", k=1, objective="space")
+    with pytest.raises(ValueError, match="optimization"):
+        compile_pbc_text("qreg q[1];\nt_pauli +Z;\n", k=1, optimization="global")
     with pytest.raises(ValueError, match="rotation_lowering"):
         compile_pbc_text(
             "qreg q[1];\nt_pauli +Z;\n",

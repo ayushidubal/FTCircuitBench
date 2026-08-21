@@ -64,6 +64,37 @@ def test_compile_semi_pbc_cli_emits_default_sidecar(tmp_path):
     assert json.loads(sidecar.read_text())["format"] == "semi-pbc-sidecar"
 
 
+def test_compile_semi_pbc_cli_accepts_local_window_optimization(tmp_path):
+    pbc = tmp_path / "toy.pbc"
+    out = tmp_path / "toy.semi_pbc.jsonl"
+    summary = tmp_path / "toy.summary.json"
+    pbc.write_text("qreg q[4];\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\n")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "compile_semi_pbc.py",
+            "--pbc",
+            str(pbc),
+            "--out",
+            str(out),
+            "--summary",
+            str(summary),
+            "--k",
+            "2",
+            "--measurement-reducer",
+            "none",
+            "--optimization",
+            "local-window",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert json.loads(summary.read_text())["optimization"] == "local-window"
+
+
 def test_compile_semi_pbc_cli_reports_invalid_inputs_without_traceback(tmp_path):
     pbc = tmp_path / "toy.pbc"
     out = tmp_path / "toy.semi_pbc.jsonl"

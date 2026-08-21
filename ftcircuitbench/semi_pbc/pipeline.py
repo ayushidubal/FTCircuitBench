@@ -10,6 +10,11 @@ from ftcircuitbench.semi_pbc.lowering import (
     lower_pauli_measurement,
     lower_pauli_rotation,
 )
+from ftcircuitbench.semi_pbc.optimizer import (
+    cancel_adjacent_inverse_cliffords,
+    choose_retained_block,
+)
+from ftcircuitbench.semi_pbc.pauli import PauliTerm
 from ftcircuitbench.semi_pbc.pbc_input import SourcePBCOp, parse_pbc_text
 from ftcircuitbench.semi_pbc.reducer import ReducedSourceOp, reduce_measurements
 from ftcircuitbench.semi_pbc.schedule import compute_summary
@@ -33,6 +38,7 @@ def compile_pbc_text(
     objective: str = "latency-depth",
     measurement_reducer: str = "peres-galvao-greedy",
     greedy_order: int = 1,
+    optimization: str = "none",
     rotation_lowering: str = "parity-network",
     measurement_lowering: str = "coherent-parity",
     ancilla_budget: int | None = None,
@@ -43,6 +49,7 @@ def compile_pbc_text(
         objective=objective,
         measurement_reducer=measurement_reducer,
         greedy_order=greedy_order,
+        optimization=optimization,
         rotation_lowering=rotation_lowering,
         measurement_lowering=measurement_lowering,
         ancilla_budget=ancilla_budget,
@@ -58,6 +65,7 @@ def compile_pbc_text(
         source_ops,
         k=k,
         ancilla_budget=ancilla_budget,
+        optimization=optimization,
     )
     validate_program(header, ops)
     summary = compute_summary(
@@ -66,12 +74,13 @@ def compile_pbc_text(
         input_op_count=len(program.ops),
         max_input_weight=max((op.term.weight for op in program.ops), default=0),
     )
+    summary["optimization"] = optimization
     _enforce_ancilla_budget(summary, ancilla_budget)
     return CompileResult(
         header=header,
         ops=tuple(ops),
         summary=summary,
-        sidecar=_build_sidecar(k, provenance) if emit_sidecar else None,
+        sidecar=_build_sidecar(k, optimization, provenance) if emit_sidecar else None,
     )
 
 
@@ -85,6 +94,7 @@ def _validate_options(
     objective: str,
     measurement_reducer: str,
     greedy_order: int,
+    optimization: str,
     rotation_lowering: str,
     measurement_lowering: str,
     ancilla_budget: int | None,
@@ -97,6 +107,8 @@ def _validate_options(
         raise ValueError("measurement_reducer must be 'none' or 'peres-galvao-greedy'")
     if greedy_order not in {0, 1, 2}:
         raise ValueError("greedy_order must be 0, 1, or 2")
+    if optimization not in {"none", "local-window"}:
+        raise ValueError("optimization must be 'none' or 'local-window'")
     if rotation_lowering != "parity-network":
         raise ValueError("rotation_lowering must be 'parity-network'")
     if measurement_lowering != "coherent-parity":
@@ -132,21 +144,30 @@ def _lower_source_ops(
     *,
     k: int,
     ancilla_budget: int | None,
+    optimization: str,
 ) -> tuple[list[SemiPBCOp], list[dict[str, Any]]]:
+    source_ops = tuple(source_ops)
     ops: list[SemiPBCOp] = []
     provenance: list[dict[str, Any]] = []
     next_id = 0
     next_ancilla = 0
     next_classical = 0
 
-    for source_op in source_ops:
+    for index, source_op in enumerate(source_ops):
         source_result = f"src{source_op.id}"
+        retained_qubits = _retained_qubits_for_source_op(
+            source_ops,
+            index=index,
+            k=k,
+            optimization=optimization,
+        )
         if source_op.op == "t_pauli":
             lowered = lower_pauli_rotation(
                 next_id,
                 source_op.term,
                 k,
                 source_id=source_op.source_id,
+                retained_qubits=retained_qubits,
             )
         elif source_op.op == "m_pauli":
             if source_op.term.weight == 0:
@@ -171,6 +192,7 @@ def _lower_source_ops(
                 source_id=source_op.source_id,
                 next_ancilla=next_ancilla,
                 next_classical=next_classical,
+                retained_qubits=retained_qubits,
             )
             lowered = _apply_reducer_result_mapping(
                 measurement.ops,
@@ -186,7 +208,45 @@ def _lower_source_ops(
         provenance.extend(_provenance_records(source_op, lowered))
         next_id = lowered[-1].id + 1
 
+    if optimization == "local-window":
+        ops = cancel_adjacent_inverse_cliffords(ops)
+        provenance = _filter_provenance(provenance, ops)
+
     return ops, provenance
+
+
+def _retained_qubits_for_source_op(
+    source_ops: tuple[ReducedSourceOp, ...],
+    *,
+    index: int,
+    k: int,
+    optimization: str,
+) -> tuple[str, ...] | None:
+    source_op = source_ops[index]
+    if optimization != "local-window" or source_op.term.weight <= k:
+        return None
+    block = choose_retained_block(
+        source_op.term,
+        k=k,
+        neighbor_terms=_neighbor_terms(source_ops, index),
+    )
+    return block.retained_qubits
+
+
+def _neighbor_terms(
+    source_ops: tuple[ReducedSourceOp, ...],
+    index: int,
+) -> tuple[PauliTerm, ...]:
+    terms = []
+    for prior in range(index - 1, -1, -1):
+        if source_ops[prior].term.weight > 0:
+            terms.append(source_ops[prior].term)
+            break
+    for following in range(index + 1, len(source_ops)):
+        if source_ops[following].term.weight > 0:
+            terms.append(source_ops[following].term)
+            break
+    return tuple(terms)
 
 
 def _enforce_ancilla_budget(
@@ -269,10 +329,23 @@ def _provenance_records(
     return records
 
 
-def _build_sidecar(k: int, provenance: list[dict[str, Any]]) -> dict[str, Any]:
+def _filter_provenance(
+    provenance: list[dict[str, Any]],
+    ops: list[SemiPBCOp],
+) -> list[dict[str, Any]]:
+    retained_ids = {op.id for op in ops}
+    return [record for record in provenance if record["id"] in retained_ids]
+
+
+def _build_sidecar(
+    k: int,
+    optimization: str,
+    provenance: list[dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "format": "semi-pbc-sidecar",
         "version": 1,
         "k": k,
+        "optimization": optimization,
         "provenance": provenance,
     }

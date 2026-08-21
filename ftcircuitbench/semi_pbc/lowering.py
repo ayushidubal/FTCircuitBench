@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from ftcircuitbench.semi_pbc.ir import SemiPBCOp
@@ -47,6 +47,7 @@ def lower_pauli_measurement(
     source_id: str | None,
     next_ancilla: int,
     next_classical: int,
+    retained_qubits: Sequence[str] | None = None,
 ) -> LoweringResult:
     _validate_non_negative_int(start_id, "start_id")
     _validate_k(k)
@@ -57,6 +58,8 @@ def lower_pauli_measurement(
     c_raw = f"c{next_classical}"
     xor_const = 1 if term.sign == -1 else 0
     if term.weight <= k:
+        if retained_qubits is not None:
+            _kept_and_extra_qubits(term, k, retained_qubits)
         positive_term = PauliTerm.from_pairs(term.pairs, sign=1)
         return LoweringResult(
             ops=[
@@ -80,7 +83,7 @@ def lower_pauli_measurement(
 
     ops: list[SemiPBCOp] = []
     next_id = start_id
-    kept_qubits, extra_qubits = _kept_and_extra_qubits(term, k)
+    kept_qubits, extra_qubits = _kept_and_extra_qubits(term, k, retained_qubits)
     target = kept_qubits[0]
 
     next_id = _append_basis_change_ops(ops, next_id, term, source_id)
@@ -135,16 +138,19 @@ def lower_pauli_rotation(
     term: PauliTerm,
     k: int,
     source_id: str | None = None,
+    retained_qubits: Sequence[str] | None = None,
 ) -> list[SemiPBCOp]:
     _validate_non_negative_int(start_id, "start_id")
     _validate_k(k)
     _validate_non_identity_term(term)
     if term.weight <= k:
+        if retained_qubits is not None:
+            _kept_and_extra_qubits(term, k, retained_qubits)
         return [SemiPBCOp.pauli_rotation(start_id, term, source_id=source_id)]
 
     ops: list[SemiPBCOp] = []
     next_id = start_id
-    kept_qubits, extra_qubits = _kept_and_extra_qubits(term, k)
+    kept_qubits, extra_qubits = _kept_and_extra_qubits(term, k, retained_qubits)
     target = kept_qubits[0]
 
     next_id = _append_basis_change_ops(ops, next_id, term, source_id)
@@ -177,9 +183,34 @@ def lower_pauli_rotation(
     return ops
 
 
-def _kept_and_extra_qubits(term: PauliTerm, k: int) -> tuple[list[str], list[str]]:
+def _kept_and_extra_qubits(
+    term: PauliTerm,
+    k: int,
+    retained_qubits: Sequence[str] | None = None,
+) -> tuple[list[str], list[str]]:
     active_qubits = [qubit for qubit, _pauli in term.pairs]
-    return active_qubits[:k], active_qubits[k:]
+    if retained_qubits is None:
+        return active_qubits[:k], active_qubits[k:]
+
+    if isinstance(retained_qubits, (str, bytes)):
+        raise TypeError("retained_qubits must be a sequence of qubit ids")
+    kept_qubits = list(retained_qubits)
+    required_count = min(k, len(active_qubits))
+    if len(kept_qubits) != required_count:
+        raise ValueError(
+            "retained_qubits must contain exactly "
+            f"{required_count} active qubits"
+        )
+
+    active_set = set(active_qubits)
+    seen: set[str] = set()
+    for qubit in kept_qubits:
+        if qubit in seen:
+            raise ValueError(f"duplicate retained qubit {qubit!r}")
+        if qubit not in active_set:
+            raise ValueError(f"retained qubit {qubit!r} is not active in the term")
+        seen.add(qubit)
+    return kept_qubits, [qubit for qubit in active_qubits if qubit not in seen]
 
 
 def _append_basis_change_ops(

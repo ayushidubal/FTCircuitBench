@@ -88,6 +88,29 @@ def test_rotation_lowering_uses_basis_changes_and_max_k_rotation():
     )
 
 
+def test_rotation_lowering_accepts_retained_qubit_override():
+    term = PauliTerm.from_full_width("+ZZZZ")
+    ops = lower_pauli_rotation(
+        start_id=0,
+        term=term,
+        k=2,
+        source_id="line4",
+        retained_qubits=("q2", "q3"),
+    )
+
+    assert [op.qubits for op in ops if op.op == "cx"] == [
+        ("q0", "q2"),
+        ("q1", "q2"),
+        ("q1", "q2"),
+        ("q0", "q2"),
+    ]
+    t_op = next(op for op in ops if op.op == "t_pauli")
+    assert t_op.term.pairs == (("q2", "Z"), ("q3", "Z"))
+    original = pauli_rotation_matrix(term, data_qubits=4)
+    compiled = semi_pbc_unitary(ops, data_qubits=4)
+    assert_allclose_up_to_global_phase(compiled, original)
+
+
 def pauli_rotation_matrix(term: PauliTerm, data_qubits: int) -> np.ndarray:
     qubit_order = [f"q{i}" for i in range(data_qubits)]
     pauli = signed_pauli_matrix(term, qubit_order)
