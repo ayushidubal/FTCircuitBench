@@ -30,7 +30,7 @@ def main() -> int:
     parser.add_argument(
         "--optimization",
         default="none",
-        choices=("none", "local-window"),
+        choices=("none", "local-window", "rotation-dp"),
     )
     parser.add_argument(
         "--rotation-lowering",

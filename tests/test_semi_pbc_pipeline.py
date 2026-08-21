@@ -225,6 +225,86 @@ def test_compile_local_window_filters_sidecar_after_cancellation():
     assert result.sidecar["optimization"] == "local-window"
 
 
+def test_compile_rotation_dp_reduces_run_beyond_local_window():
+    text = "qreg q[4];\nt_pauli +ZZZI;\nt_pauli +ZIZZ;\n"
+    local = compile_pbc_text(
+        text,
+        k=2,
+        measurement_reducer="none",
+        optimization="local-window",
+    )
+    dp = compile_pbc_text(
+        text,
+        k=2,
+        measurement_reducer="none",
+        optimization="rotation-dp",
+    )
+
+    assert local.summary["output_op_count"] == 6
+    assert dp.summary["output_op_count"] == 4
+    assert dp.summary["optimization"] == "rotation-dp"
+    assert [op.op for op in dp.ops] == ["cx", "t_pauli", "t_pauli", "cx"]
+    assert dp.summary["max_output_weight"] == 2
+
+
+def test_compile_rotation_dp_unitary_matches_source():
+    first_term = PauliTerm.from_full_width("+ZZZI")
+    second_term = PauliTerm.from_full_width("+ZIZZ")
+    result = compile_pbc_text(
+        "qreg q[4];\nt_pauli +ZZZI;\nt_pauli +ZIZZ;\n",
+        k=2,
+        measurement_reducer="none",
+        optimization="rotation-dp",
+    )
+
+    original = (
+        pauli_rotation_matrix(second_term, data_qubits=4)
+        @ pauli_rotation_matrix(first_term, data_qubits=4)
+    )
+    compiled = semi_pbc_unitary(result.ops, data_qubits=4)
+    assert_allclose_up_to_global_phase(compiled, original)
+
+
+def test_compile_rotation_dp_sidecar_matches_output_ops():
+    result = compile_pbc_text(
+        "qreg q[4];\nt_pauli +ZZZI;\nt_pauli +ZIZZ;\n",
+        k=2,
+        measurement_reducer="none",
+        optimization="rotation-dp",
+        emit_sidecar=True,
+    )
+    op_ids = {op.id for op in result.ops}
+    sidecar_ids = {record["id"] for record in result.sidecar["provenance"]}
+
+    assert sidecar_ids == op_ids
+    assert result.sidecar["optimization"] == "rotation-dp"
+
+
+def test_compile_rotation_dp_does_not_regress_local_window_at_run_boundaries():
+    text = (
+        "qreg q[5];\n"
+        "t_pauli +IIIIZ;\n"
+        "t_pauli +IZZIZ;\n"
+        "t_pauli +IZZZZ;\n"
+        "m_pauli +IZZZZ;\n"
+    )
+    local = compile_pbc_text(
+        text,
+        k=2,
+        measurement_reducer="none",
+        optimization="local-window",
+    )
+    dp = compile_pbc_text(
+        text,
+        k=2,
+        measurement_reducer="none",
+        optimization="rotation-dp",
+    )
+
+    assert local.summary["output_op_count"] == 11
+    assert dp.summary["output_op_count"] <= local.summary["output_op_count"]
+
+
 def test_compile_pbc_file_reads_source_path(tmp_path):
     path = tmp_path / "toy.pbc"
     path.write_text("qreg q[1];\nt_pauli +Z;\n")

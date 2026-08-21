@@ -13,6 +13,7 @@ from ftcircuitbench.semi_pbc.lowering import (
 from ftcircuitbench.semi_pbc.optimizer import (
     cancel_adjacent_inverse_cliffords,
     choose_retained_block,
+    optimize_rotation_run,
 )
 from ftcircuitbench.semi_pbc.pauli import PauliTerm
 from ftcircuitbench.semi_pbc.pbc_input import SourcePBCOp, parse_pbc_text
@@ -107,8 +108,10 @@ def _validate_options(
         raise ValueError("measurement_reducer must be 'none' or 'peres-galvao-greedy'")
     if greedy_order not in {0, 1, 2}:
         raise ValueError("greedy_order must be 0, 1, or 2")
-    if optimization not in {"none", "local-window"}:
-        raise ValueError("optimization must be 'none' or 'local-window'")
+    if optimization not in {"none", "local-window", "rotation-dp"}:
+        raise ValueError(
+            "optimization must be 'none', 'local-window', or 'rotation-dp'"
+        )
     if rotation_lowering != "parity-network":
         raise ValueError("rotation_lowering must be 'parity-network'")
     if measurement_lowering != "coherent-parity":
@@ -153,7 +156,24 @@ def _lower_source_ops(
     next_ancilla = 0
     next_classical = 0
 
-    for index, source_op in enumerate(source_ops):
+    index = 0
+    while index < len(source_ops):
+        run_end = _rotation_dp_run_end(source_ops, index, k, optimization)
+        if run_end is not None:
+            run = source_ops[index:run_end]
+            optimized = optimize_rotation_run(run, start_id=next_id, k=k)
+            ops.extend(optimized.ops)
+            provenance.extend(
+                _provenance_records_from_mapping(
+                    optimized.ops,
+                    optimized.source_ops_by_output_id,
+                )
+            )
+            next_id = optimized.ops[-1].id + 1
+            index = run_end
+            continue
+
+        source_op = source_ops[index]
         source_result = f"src{source_op.id}"
         retained_qubits = _retained_qubits_for_source_op(
             source_ops,
@@ -183,6 +203,7 @@ def _lower_source_ops(
                 ops.extend(lowered)
                 provenance.extend(_provenance_records(source_op, lowered))
                 next_id = lowered[-1].id + 1
+                index += 1
                 continue
             measurement = lower_pauli_measurement(
                 start_id=next_id,
@@ -207,12 +228,44 @@ def _lower_source_ops(
         ops.extend(lowered)
         provenance.extend(_provenance_records(source_op, lowered))
         next_id = lowered[-1].id + 1
+        index += 1
 
-    if optimization == "local-window":
+    if optimization in {"local-window", "rotation-dp"}:
         ops = cancel_adjacent_inverse_cliffords(ops)
         provenance = _filter_provenance(provenance, ops)
+    if optimization == "rotation-dp":
+        fallback_ops, fallback_provenance = _lower_source_ops(
+            source_ops,
+            k=k,
+            ancilla_budget=ancilla_budget,
+            optimization="local-window",
+        )
+        if len(fallback_ops) < len(ops):
+            return fallback_ops, fallback_provenance
 
     return ops, provenance
+
+
+def _rotation_dp_run_end(
+    source_ops: tuple[ReducedSourceOp, ...],
+    index: int,
+    k: int,
+    optimization: str,
+) -> int | None:
+    if optimization != "rotation-dp":
+        return None
+    if not _is_high_weight_rotation(source_ops[index], k):
+        return None
+    run_end = index + 1
+    while run_end < len(source_ops) and _is_high_weight_rotation(
+        source_ops[run_end], k
+    ):
+        run_end += 1
+    return run_end if run_end - index > 1 else None
+
+
+def _is_high_weight_rotation(source_op: ReducedSourceOp, k: int) -> bool:
+    return source_op.op == "t_pauli" and source_op.term.weight > k
 
 
 def _retained_qubits_for_source_op(
@@ -223,7 +276,7 @@ def _retained_qubits_for_source_op(
     optimization: str,
 ) -> tuple[str, ...] | None:
     source_op = source_ops[index]
-    if optimization != "local-window" or source_op.term.weight <= k:
+    if optimization not in {"local-window", "rotation-dp"} or source_op.term.weight <= k:
         return None
     block = choose_retained_block(
         source_op.term,
@@ -306,27 +359,54 @@ def _classical_sort_key(term: str) -> tuple[int, int, str]:
 def _provenance_records(
     source_op: ReducedSourceOp, lowered: list[SemiPBCOp]
 ) -> list[dict[str, Any]]:
+    include_gadget = len(lowered) > 1
+    return [
+        _provenance_record(source_op, op, include_gadget=include_gadget)
+        for op in lowered
+    ]
+
+
+def _provenance_records_from_mapping(
+    ops: list[SemiPBCOp],
+    source_ops_by_output_id: dict[int, ReducedSourceOp],
+) -> list[dict[str, Any]]:
+    source_output_counts: dict[int, int] = {}
+    for source_op in source_ops_by_output_id.values():
+        source_output_counts[source_op.id] = source_output_counts.get(source_op.id, 0) + 1
+    return [
+        _provenance_record(
+            source_ops_by_output_id[op.id],
+            op,
+            include_gadget=source_output_counts[source_ops_by_output_id[op.id].id] > 1,
+        )
+        for op in ops
+    ]
+
+
+def _provenance_record(
+    source_op: ReducedSourceOp,
+    op: SemiPBCOp,
+    *,
+    include_gadget: bool,
+) -> dict[str, Any]:
     gadget_id = f"g{source_op.id}"
-    records = []
-    for op in lowered:
-        record: dict[str, Any] = {
-            "id": op.id,
-            "op": op.op,
-            "source_id": source_op.source_id,
-        }
-        if source_op.used_source_ids:
-            record["used_source_ids"] = list(source_op.used_source_ids)
-        if (
-            source_op.used_source_ids
-            or source_op.result_terms
-            or source_op.result_const != 0
-        ):
-            record["result_terms"] = list(source_op.result_terms)
-            record["result_const"] = source_op.result_const
-        if len(lowered) > 1:
-            record["gadget_id"] = gadget_id
-        records.append(record)
-    return records
+    record: dict[str, Any] = {
+        "id": op.id,
+        "op": op.op,
+        "source_id": source_op.source_id,
+    }
+    if source_op.used_source_ids:
+        record["used_source_ids"] = list(source_op.used_source_ids)
+    if (
+        source_op.used_source_ids
+        or source_op.result_terms
+        or source_op.result_const != 0
+    ):
+        record["result_terms"] = list(source_op.result_terms)
+        record["result_const"] = source_op.result_const
+    if include_gadget:
+        record["gadget_id"] = gadget_id
+    return record
 
 
 def _filter_provenance(
