@@ -18,12 +18,13 @@ from typing import Any
 
 import numpy as np
 from qiskit import QuantumCircuit, qasm2
-from qiskit.quantum_info import Operator
+from qiskit.quantum_info import Clifford, Operator, Pauli
 from qiskit.transpiler import PassManager
 
 from ftcircuitbench.semi_pbc.pbc_input import PBCProgram
 
 _TWO_QUBIT_OPS = {"cx", "cz", "ecr", "swap", "iswap", "rxx", "ryy", "rzz"}
+_AI_ROTATION_MARKER = 0x80000000
 _SUPPORTED_TOPOLOGIES = {
     ("line", 4): [(0, 1), (1, 2), (2, 3)],
     ("line", 5): [(0, 1), (1, 2), (2, 3), (3, 4)],
@@ -64,6 +65,29 @@ class PauliNetworkRegion:
     coupling_map: tuple[tuple[int, int], ...]
 
 
+@dataclass(frozen=True)
+class PauliReplayEmission:
+    prefix_length: int
+    op: str
+    qubit: int
+    rotation_index: int
+    phase_mult: int
+    emitted_pauli: str
+
+
+@dataclass(frozen=True)
+class PauliReplaySnapshot:
+    prefix_length: int
+    pending_terms: tuple[str, ...]
+    pending_weights: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class PauliReplayResult:
+    snapshots: tuple[PauliReplaySnapshot, ...]
+    emissions: tuple[PauliReplayEmission, ...]
+
+
 def ai_pauli_network_dependency_status() -> dict[str, Any]:
     qiskit_version = _package_version("qiskit")
     transpiler_version = _package_version("qiskit-ibm-transpiler")
@@ -90,6 +114,104 @@ def ai_pauli_network_dependency_status() -> dict[str, Any]:
         "qiskit_ibm_transpiler_version": transpiler_version,
         "reason": "",
     }
+
+
+def decode_ai_pauli_solution(
+    encoded_solution: Sequence[int],
+) -> list[tuple[str, int, int, int]]:
+    decoded = []
+    axis_names = ("rx", "ry", "rz")
+    for value in encoded_solution:
+        if value >= _AI_ROTATION_MARKER:
+            axis_code = (value >> 21) & 0x3
+            if axis_code >= len(axis_names):
+                raise ValueError(f"invalid AI Pauli rotation axis code {axis_code}")
+            qubit = (value >> 11) & 0x3FF
+            rotation_index = (value >> 1) & 0x3FF
+            phase_mult = 1 if value & 1 else -1
+            decoded.append(
+                (axis_names[axis_code], qubit, rotation_index, phase_mult)
+            )
+        else:
+            decoded.append(("gate", int(value), 0, 0))
+    return decoded
+
+
+def replay_ai_pauli_solution(
+    *,
+    num_qubits: int,
+    signed_paulis: Sequence[str],
+    gateset: Sequence[tuple[str, Sequence[int]]],
+    solution: Sequence[int] | Sequence[tuple[str, int, int, int]],
+) -> PauliReplayResult:
+    if num_qubits < 1:
+        raise ValueError("num_qubits must be >= 1")
+
+    decoded_solution = _normalise_ai_pauli_solution(solution)
+    pending = [_canonical_signed_pauli(pauli, num_qubits) for pauli in signed_paulis]
+    emitted: set[int] = set()
+    emissions: list[PauliReplayEmission] = []
+    snapshots = [_pauli_replay_snapshot(0, pending, emitted)]
+
+    for prefix_length, (op, arg1, arg2, arg3) in enumerate(decoded_solution, start=1):
+        if op == "gate":
+            if arg1 < 0 or arg1 >= len(gateset):
+                raise ValueError(f"gate action index {arg1} is outside the gateset")
+            clifford = _clifford_for_ai_pauli_gate(num_qubits, gateset[arg1])
+            for index, pauli in enumerate(pending):
+                if index not in emitted:
+                    pending[index] = _evolve_signed_pauli(pauli, clifford)
+        elif op in {"rx", "ry", "rz"}:
+            qubit, rotation_index, phase_mult = arg1, arg2, arg3
+            if rotation_index < 0 or rotation_index >= len(pending):
+                raise ValueError(f"rotation index {rotation_index} is out of range")
+            if rotation_index in emitted:
+                raise ValueError(f"rotation index {rotation_index} was already emitted")
+            expected_op, expected_qubit, expected_phase = _single_rotation_for_pauli(
+                pending[rotation_index]
+            )
+            if (op, qubit, phase_mult) != (
+                expected_op,
+                expected_qubit,
+                expected_phase,
+            ):
+                raise ValueError(
+                    "rotation emission does not match pending Pauli: "
+                    f"got {(op, qubit, phase_mult)}, "
+                    f"expected {(expected_op, expected_qubit, expected_phase)}"
+                )
+            emissions.append(
+                PauliReplayEmission(
+                    prefix_length=prefix_length,
+                    op=op,
+                    qubit=qubit,
+                    rotation_index=rotation_index,
+                    phase_mult=phase_mult,
+                    emitted_pauli=pending[rotation_index],
+                )
+            )
+            emitted.add(rotation_index)
+        else:
+            raise ValueError(f"unsupported AI Pauli solution op {op!r}")
+        snapshots.append(_pauli_replay_snapshot(prefix_length, pending, emitted))
+
+    return PauliReplayResult(
+        snapshots=tuple(snapshots),
+        emissions=tuple(emissions),
+    )
+
+
+def find_k_terminal_prefix(
+    replay: PauliReplayResult,
+    *,
+    k: int,
+) -> PauliReplaySnapshot:
+    if k < 1:
+        raise ValueError("k must be >= 1")
+    for snapshot in replay.snapshots:
+        if all(weight <= k for weight in snapshot.pending_weights):
+            return snapshot
+    raise ValueError(f"no replay prefix has all pending Pauli weights <= {k}")
 
 
 def build_pauli_network_circuit(
@@ -396,6 +518,93 @@ def _parse_signed_pauli(signed_pauli: str, num_qubits: int) -> tuple[int, str]:
     if invalid:
         raise ValueError(f"unsupported Pauli labels: {invalid}")
     return (1 if sign_label == "+" else -1), pauli
+
+
+def _normalise_ai_pauli_solution(
+    solution: Sequence[int] | Sequence[tuple[str, int, int, int]],
+) -> list[tuple[str, int, int, int]]:
+    if not solution:
+        return []
+    first = solution[0]
+    if isinstance(first, int):
+        return decode_ai_pauli_solution(solution)  # type: ignore[arg-type]
+    return [(op, int(arg1), int(arg2), int(arg3)) for op, arg1, arg2, arg3 in solution]  # type: ignore[misc]
+
+
+def _canonical_signed_pauli(signed_pauli: str, num_qubits: int) -> str:
+    sign, pauli = _parse_signed_pauli(signed_pauli, num_qubits)
+    return ("+" if sign > 0 else "-") + pauli
+
+
+def _clifford_for_ai_pauli_gate(
+    num_qubits: int,
+    gate: tuple[str, Sequence[int]],
+) -> Clifford:
+    gate_name, raw_args = gate
+    args = tuple(int(arg) for arg in raw_args)
+    if any(arg < 0 or arg >= num_qubits for arg in args):
+        raise ValueError(f"gate {gate_name} uses qubits outside width {num_qubits}")
+    circuit = QuantumCircuit(num_qubits)
+    method_name = gate_name.lower()
+    if method_name == "cx":
+        args = args[::-1]
+    try:
+        getattr(circuit, method_name)(*args)
+    except AttributeError as exc:
+        raise ValueError(f"unsupported gate {gate_name!r}") from exc
+    return Clifford(circuit)
+
+
+def _evolve_signed_pauli(signed_pauli: str, clifford: Clifford) -> str:
+    sign = signed_pauli[0]
+    pauli = signed_pauli[1:]
+    qiskit_label = pauli[::-1]
+    if sign == "-":
+        qiskit_label = "-" + qiskit_label
+    evolved = Pauli(qiskit_label).evolve(clifford, frame="s")
+    return _qiskit_pauli_to_signed_pauli(evolved)
+
+
+def _qiskit_pauli_to_signed_pauli(pauli: Pauli) -> str:
+    label = pauli.to_label()
+    sign = "+"
+    if label.startswith("-"):
+        sign = "-"
+        label = label[1:]
+    elif label.startswith("+"):
+        label = label[1:]
+    if label.startswith(("i", "-i")):
+        raise ValueError(f"non-real Pauli phase after Clifford evolution: {pauli}")
+    return sign + label[::-1]
+
+
+def _single_rotation_for_pauli(signed_pauli: str) -> tuple[str, int, int]:
+    sign = signed_pauli[0]
+    pauli = signed_pauli[1:]
+    active = [(index, axis) for index, axis in enumerate(pauli) if axis != "I"]
+    if len(active) != 1:
+        raise ValueError(f"pending Pauli is not weight 1: {signed_pauli}")
+    qubit, axis = active[0]
+    return f"r{axis.lower()}", qubit, (1 if sign == "+" else -1)
+
+
+def _pauli_replay_snapshot(
+    prefix_length: int,
+    pending: Sequence[str],
+    emitted: set[int],
+) -> PauliReplaySnapshot:
+    pending_terms = tuple(
+        pauli for index, pauli in enumerate(pending) if index not in emitted
+    )
+    return PauliReplaySnapshot(
+        prefix_length=prefix_length,
+        pending_terms=pending_terms,
+        pending_weights=tuple(_pauli_weight(pauli) for pauli in pending_terms),
+    )
+
+
+def _pauli_weight(signed_pauli: str) -> int:
+    return sum(label != "I" for label in signed_pauli[1:])
 
 
 def _compress_source_pauli(signed_pauli: str, reindex: dict[int, int]) -> str:

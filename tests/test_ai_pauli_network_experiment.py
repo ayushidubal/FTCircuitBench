@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from ftcircuitbench.semi_pbc.ai_pauli_network import (
     _capture_process_output,
     ai_pauli_network_dependency_status,
@@ -12,8 +14,11 @@ from ftcircuitbench.semi_pbc.ai_pauli_network import (
     build_rotation_region_circuit,
     circuit_metrics,
     circuits_equivalent,
+    decode_ai_pauli_solution,
     extract_rotation_regions,
     extract_supported_rotation_windows,
+    find_k_terminal_prefix,
+    replay_ai_pauli_solution,
     run_ai_pauli_network_synthesis,
 )
 from ftcircuitbench.semi_pbc.pbc_input import parse_pbc_text
@@ -368,3 +373,66 @@ t_pauli +ZIIZ;""",
         "ops": -2,
         "two_qubit_ops": -2,
     }
+
+
+def test_decode_ai_pauli_solution_decodes_gate_and_rotation_markers() -> None:
+    rotation_marker = 0x80000000 | (2 << 21) | (3 << 11) | (5 << 1) | 1
+
+    decoded = decode_ai_pauli_solution([7, rotation_marker])
+
+    assert decoded == [("gate", 7, 0, 0), ("rz", 3, 5, 1)]
+
+
+def test_decode_ai_pauli_solution_matches_qiskit_gym_decoder_when_available() -> None:
+    qiskit_gym_synthesis = pytest.importorskip("qiskit_gym.envs.synthesis")
+    encoded = [
+        7,
+        0x80000000 | (0 << 21) | (2 << 11) | (4 << 1),
+        0x80000000 | (1 << 21) | (1 << 11) | (3 << 1) | 1,
+        0x80000000 | (2 << 21) | (3 << 11) | (5 << 1) | 1,
+    ]
+
+    assert decode_ai_pauli_solution(encoded) == (
+        qiskit_gym_synthesis.decode_pauli_solution(encoded)
+    )
+
+
+def test_replay_ai_pauli_solution_uses_reversed_cx_and_s_frame() -> None:
+    cx_replay = replay_ai_pauli_solution(
+        num_qubits=2,
+        signed_paulis=("+ZZ",),
+        gateset=(("cx", (0, 1)),),
+        solution=[("gate", 0, 0, 0), ("rz", 0, 0, 1)],
+    )
+
+    assert cx_replay.snapshots[1].pending_terms == ("+ZI",)
+    assert cx_replay.emissions[0].emitted_pauli == "+ZI"
+
+    s_replay = replay_ai_pauli_solution(
+        num_qubits=1,
+        signed_paulis=("+X",),
+        gateset=(("s", (0,)),),
+        solution=[("gate", 0, 0, 0), ("ry", 0, 0, 1)],
+    )
+
+    assert s_replay.snapshots[1].pending_terms == ("+Y",)
+    assert s_replay.emissions[0].phase_mult == 1
+
+
+def test_find_k_terminal_prefix_returns_first_all_pending_weights_under_cap() -> None:
+    replay = replay_ai_pauli_solution(
+        num_qubits=2,
+        signed_paulis=("+ZZ", "+XI"),
+        gateset=(("cx", (0, 1)),),
+        solution=[
+            ("gate", 0, 0, 0),
+            ("rz", 0, 0, 1),
+            ("rx", 0, 1, 1),
+        ],
+    )
+
+    terminal = find_k_terminal_prefix(replay, k=1)
+
+    assert terminal.prefix_length == 1
+    assert terminal.pending_terms == ("+ZI", "+XI")
+    assert terminal.pending_weights == (1, 1)
