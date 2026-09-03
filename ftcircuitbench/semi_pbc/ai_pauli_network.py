@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 from qiskit import QuantumCircuit, qasm2
+from qiskit.exceptions import QiskitError
 from qiskit.quantum_info import Clifford, Operator, Pauli
 from qiskit.transpiler import PassManager
 
@@ -356,6 +357,151 @@ def run_ai_pauli_network_synthesis_on_circuit(
     }
 
 
+def extract_ai_pauli_trajectory(
+    *,
+    circuit: QuantumCircuit,
+    coupling_map: Sequence[tuple[int, int]],
+    qargs: Sequence[int] | None = None,
+    deterministic: bool = False,
+    num_searches: int = 10,
+    num_mcts_searches: int = 0,
+    c: float = 2**0.5,
+    max_expand_depth: int = 1,
+) -> dict[str, Any]:
+    before = circuit_metrics(circuit)
+    status = ai_pauli_network_dependency_status()
+    if not status["available"]:
+        return {
+            "status": "skipped",
+            "dependency": status,
+            "before": before,
+            "raw_actions": None,
+            "decoded_solution": None,
+            "gateset": None,
+            "num_qubits": circuit.num_qubits,
+            "solver_output_lines": 0,
+            "solver_output_excerpt": "",
+            "error": status["reason"],
+        }
+
+    try:
+        selected_qargs = list(range(circuit.num_qubits)) if qargs is None else list(qargs)
+        model_repo = _load_ai_pauli_model_repository()
+        record, subgraph_perm = _select_ai_pauli_model_record(
+            model_repo,
+            coupling_map,
+            selected_qargs,
+        )
+        model = record.model
+        model_n_qubits = int(model.env_config.get("num_qubits", len(selected_qargs)))
+        prepared_input = _prepare_ai_pauli_input(
+            circuit,
+            subgraph_perm,
+            model_n_qubits,
+        )
+        state = model.env.get_state(prepared_input)
+        with _capture_process_output() as solver_output:
+            raw_actions = model.algorithm.solve(
+                state,
+                deterministic,
+                num_searches,
+                num_mcts_searches,
+                c,
+                max_expand_depth,
+            )
+        solver_output_fields = _solver_output_fields(solver_output.getvalue())
+        if raw_actions is None:
+            return {
+                "status": "failed",
+                "dependency": status,
+                "before": before,
+                "raw_actions": None,
+                "decoded_solution": None,
+                "gateset": _normalise_gateset(model.env_config.get("gateset", [])),
+                "num_qubits": model_n_qubits,
+                **solver_output_fields,
+                "error": "AI Pauli solver returned no trajectory",
+            }
+        raw_action_list = [int(action) for action in raw_actions]
+    except Exception as exc:  # noqa: BLE001 - experiments should report failures.
+        return {
+            "status": "failed",
+            "dependency": status,
+            "before": before,
+            "raw_actions": None,
+            "decoded_solution": None,
+            "gateset": None,
+            "num_qubits": circuit.num_qubits,
+            "solver_output_lines": 0,
+            "solver_output_excerpt": "",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    return {
+        "status": "ok",
+        "dependency": status,
+        "before": before,
+        "raw_actions": raw_action_list,
+        "decoded_solution": decode_ai_pauli_solution(raw_action_list),
+        "gateset": _normalise_gateset(model.env_config.get("gateset", [])),
+        "num_qubits": model_n_qubits,
+        "subgraph_perm": list(subgraph_perm),
+        **solver_output_fields,
+        "error": "",
+    }
+
+
+def analyze_ai_pauli_window_trajectory(
+    window: PauliNetworkWindow | PauliNetworkRegion,
+    *,
+    k: int,
+    deterministic: bool = False,
+    num_searches: int = 10,
+    num_mcts_searches: int = 0,
+    c: float = 2**0.5,
+    max_expand_depth: int = 1,
+) -> dict[str, Any]:
+    circuit = build_pauli_network_circuit(
+        num_qubits=window.num_qubits,
+        signed_paulis=window.signed_paulis,
+    )
+    replay_terms, rotation_angle_signs = _parse_ai_pauli_circuit_rotations(circuit)
+    trajectory = extract_ai_pauli_trajectory(
+        circuit=circuit,
+        coupling_map=window.coupling_map,
+        deterministic=deterministic,
+        num_searches=num_searches,
+        num_mcts_searches=num_mcts_searches,
+        c=c,
+        max_expand_depth=max_expand_depth,
+    )
+    if trajectory["status"] != "ok":
+        return trajectory
+
+    replay = replay_ai_pauli_solution(
+        num_qubits=int(trajectory["num_qubits"]),
+        signed_paulis=replay_terms,
+        gateset=trajectory["gateset"],
+        solution=trajectory["decoded_solution"],
+    )
+    terminal = find_k_terminal_prefix(replay, k=k)
+    emissions_before_prefix = sum(
+        emission.prefix_length <= terminal.prefix_length
+        for emission in replay.emissions
+    )
+
+    return {
+        **trajectory,
+        "full_trajectory_length": len(trajectory["raw_actions"]),
+        "k_terminal_prefix_length": terminal.prefix_length,
+        "pending_terms": list(terminal.pending_terms),
+        "pending_weights": list(terminal.pending_weights),
+        "rotation_angle_signs": list(rotation_angle_signs),
+        "emissions_before_prefix": emissions_before_prefix,
+        "total_emissions": len(replay.emissions),
+    }
+
+
 def extract_rotation_regions(
     program: PBCProgram,
     *,
@@ -655,6 +801,103 @@ def _region_coupling_map(
     if topology == "line":
         return [(qubit, qubit + 1) for qubit in range(num_qubits - 1)]
     return _SUPPORTED_TOPOLOGIES.get((topology, num_qubits))
+
+
+def _load_ai_pauli_model_repository():
+    _install_qiskit_compatibility_shims()
+    from qiskit_ibm_transpiler.model_bootstrap import ensure_models_loaded
+
+    return ensure_models_loaded("pauli")
+
+
+def _select_ai_pauli_model_record(
+    model_repo,
+    coupling_map: Sequence[tuple[int, int]],
+    qargs: Sequence[int],
+):
+    from qiskit_ibm_transpiler.wrappers.ai_local_synthesis import (
+        get_coupling_map_graph,
+        get_formatted_coupling_map,
+        get_mapping_perm,
+    )
+
+    formatted = get_formatted_coupling_map(list(coupling_map))
+    graph = get_coupling_map_graph(coupling_map=formatted)
+    subgraph_perm, cmap_hash = get_mapping_perm(graph, list(qargs), model_repo)
+    return model_repo.get(cmap_hash), subgraph_perm
+
+
+def _prepare_ai_pauli_input(
+    circuit: QuantumCircuit,
+    subgraph_perm: Sequence[int],
+    target_qubits: int,
+) -> QuantumCircuit:
+    input_circuit = circuit.decompose(
+        ["swap", "rxx", "ryy", "rzz", "rzx", "rzy", "ryx"]
+    )
+    input_circuit_perm = QuantumCircuit(input_circuit.num_qubits).compose(
+        input_circuit,
+        qubits=np.argsort(subgraph_perm),
+    )
+    if input_circuit_perm.num_qubits > target_qubits:
+        raise ValueError(
+            f"model expects {target_qubits} qubits but circuit uses "
+            f"{input_circuit_perm.num_qubits}"
+        )
+    if input_circuit_perm.num_qubits == target_qubits:
+        return input_circuit_perm
+
+    embedded = QuantumCircuit(target_qubits)
+    embedded.compose(
+        input_circuit_perm,
+        qubits=range(input_circuit_perm.num_qubits),
+        inplace=True,
+    )
+    return embedded
+
+
+def _parse_ai_pauli_circuit_rotations(
+    circuit: QuantumCircuit,
+) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    num_qubits = circuit.num_qubits
+    clifford = Clifford(QuantumCircuit(num_qubits))
+    rotations: list[str] = []
+    angle_signs: list[int] = []
+
+    for instruction in circuit.data:
+        gate_name = instruction.operation.name.lower()
+        qubits = [circuit.find_bit(qubit).index for qubit in instruction.qubits]
+        if gate_name in {"rx", "ry", "rz"}:
+            pauli_chars = ["I"] * num_qubits
+            pauli_chars[num_qubits - 1 - qubits[0]] = gate_name[1].upper()
+            evolved = Pauli("".join(pauli_chars)).evolve(clifford)
+            rotations.append(_qiskit_pauli_to_signed_pauli(evolved.adjoint()))
+            angle_signs.append(_rotation_angle_sign(instruction.operation.params[0]))
+            continue
+        try:
+            clifford = clifford.compose(instruction.operation, qubits)
+        except QiskitError as exc:
+            raise TypeError(f"Gate {gate_name} on qubits {qubits} not supported.") from exc
+
+    return tuple(rotations), tuple(angle_signs)
+
+
+def _rotation_angle_sign(angle: Any) -> int:
+    return 1 if float(angle) >= 0 else -1
+
+
+def _solver_output_fields(output: str) -> dict[str, Any]:
+    return {
+        "solver_output_lines": len(output.splitlines()),
+        "solver_output_excerpt": output[:2000],
+    }
+
+
+def _normalise_gateset(gateset: Sequence[Sequence[Any]]) -> list[tuple[str, tuple[int, ...]]]:
+    return [
+        (str(gate_name).lower(), tuple(int(qubit) for qubit in qubits))
+        for gate_name, qubits in gateset
+    ]
 
 
 def _package_version(package: str) -> str:

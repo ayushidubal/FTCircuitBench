@@ -9,6 +9,7 @@ from typing import Any
 from qiskit import qasm2
 
 from ftcircuitbench.semi_pbc.ai_pauli_network import (
+    analyze_ai_pauli_window_trajectory,
     build_pauli_network_circuit,
     build_rotation_region_circuit,
     circuits_equivalent,
@@ -36,6 +37,7 @@ def benchmark_pbc_files(
     max_region_terms: int | None = None,
     capture_pass_output: bool = True,
     emit_candidates: bool = False,
+    trajectory_k: int | str | None = None,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     result_path = out_dir / "results.jsonl"
@@ -60,6 +62,9 @@ def benchmark_pbc_files(
         "candidates_emitted": 0,
         "candidate_equivalent": 0,
         "candidate_not_equivalent": 0,
+        "trajectory_prefix_length_total": 0,
+        "trajectory_full_length_total": 0,
+        "trajectory_emissions_before_prefix_total": 0,
         "seconds": 0.0,
     }
 
@@ -83,13 +88,19 @@ def benchmark_pbc_files(
                     if windows:
                         summary["files_with_windows"] += 1
                     for window in windows:
-                        result = run_ai_pauli_network_synthesis(
-                            num_qubits=window.num_qubits,
-                            signed_paulis=window.signed_paulis,
-                            coupling_map=list(window.coupling_map),
-                            max_threads=max_threads,
-                            capture_pass_output=capture_pass_output,
-                        )
+                        if trajectory_k is None:
+                            result = run_ai_pauli_network_synthesis(
+                                num_qubits=window.num_qubits,
+                                signed_paulis=window.signed_paulis,
+                                coupling_map=list(window.coupling_map),
+                                max_threads=max_threads,
+                                capture_pass_output=capture_pass_output,
+                            )
+                        else:
+                            result = analyze_ai_pauli_window_trajectory(
+                                window,
+                                k=_resolve_trajectory_k(trajectory_k, window.num_qubits),
+                            )
                         window_dict = asdict(window)
                         _write_result(
                             result_file,
@@ -99,6 +110,7 @@ def benchmark_pbc_files(
                             window=window_dict,
                         )
                         _update_summary(summary, result, kind="window")
+                        _update_trajectory_summary(summary, result)
                         if candidate_file is not None:
                             _maybe_write_candidate(
                                 candidate_file,
@@ -259,6 +271,38 @@ def _update_summary(
         summary["metric_unchanged"] += 1
 
 
+def _update_trajectory_summary(
+    summary: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    if result.get("status") != "ok":
+        return
+    if "k_terminal_prefix_length" not in result:
+        return
+    summary["trajectory_prefix_length_total"] += int(
+        result["k_terminal_prefix_length"]
+    )
+    summary["trajectory_full_length_total"] += int(result["full_trajectory_length"])
+    summary["trajectory_emissions_before_prefix_total"] += int(
+        result["emissions_before_prefix"]
+    )
+
+
+def _resolve_trajectory_k(value: int | str | None, num_qubits: int) -> int:
+    if value is None:
+        raise ValueError("trajectory k is not set")
+    if isinstance(value, int):
+        return value
+    if value == "floor-half":
+        return max(1, num_qubits // 2)
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(
+            "trajectory_k must be an integer or 'floor-half'"
+        ) from exc
+
+
 def _metric_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, int]:
     return {
         "ops": int(after["ops"]) - int(before["ops"]),
@@ -289,6 +333,11 @@ def main() -> int:
     parser.add_argument("--max-threads", type=int)
     parser.add_argument("--include-qasm", action="store_true")
     parser.add_argument(
+        "--trajectory-k",
+        type=str,
+        help="Analyze raw AI solver trajectories and report earliest weight-k prefix.",
+    )
+    parser.add_argument(
         "--emit-candidates",
         action="store_true",
         help="Write improved ranked-window replacements with equivalence checks.",
@@ -316,6 +365,7 @@ def main() -> int:
         max_region_terms=args.max_region_terms,
         capture_pass_output=not args.show_pass_output,
         emit_candidates=args.emit_candidates,
+        trajectory_k=args.trajectory_k,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

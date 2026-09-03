@@ -104,3 +104,55 @@ Run the focused test.
 - [ ] **Step 3: Report remaining limitations**
 
 Explicitly state that this proves replay mechanics on fixed toy trajectories, not full IBM-solver extraction on FTCircuitBench windows.
+
+## Chunk 2: Real Solver Trajectory Extraction
+
+### Task 5: Raw Action Extraction
+
+**Files:**
+- Modify: `ftcircuitbench/semi_pbc/ai_pauli_network.py`
+- Modify: `tests/test_ai_pauli_network_experiment.py`
+
+- [ ] **Step 1: Write failing tests**
+
+Test that the extractor skips cleanly when optional AI dependencies are missing and, with a fake model repository, calls `algorithm.solve(...)` and returns raw/decoded actions.
+
+- [ ] **Step 2: Run tests to verify failure**
+
+Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_ai_pauli_network_experiment.py::test_extract_ai_pauli_trajectory_skips_when_dependency_missing tests/test_ai_pauli_network_experiment.py::test_extract_ai_pauli_trajectory_uses_model_algorithm_actions -q
+```
+
+Expected: import failure because the extractor does not exist.
+
+- [ ] **Step 3: Implement minimal extractor**
+
+Mirror IBM local synthesis model selection: ensure local Pauli-network models are loaded, hash the requested coupling map, prepare the input circuit using `AILocalPauliNetworkSynthesis._prepare_input`, call `model.env.get_state(prepared_input)`, then call `model.algorithm.solve(...)`.
+
+- [ ] **Step 4: Verify focused tests pass**
+
+Run the same focused tests.
+
+### Task 6: k-Terminal Window Analysis
+
+**Files:**
+- Modify: `ftcircuitbench/semi_pbc/ai_pauli_network.py`
+- Modify: `tests/test_ai_pauli_network_experiment.py`
+
+- [ ] **Step 1: Write failing tests**
+
+Test that a window trajectory analysis reports full trajectory length, k-terminal prefix length, pending terms, and pending weights.
+
+- [ ] **Step 2: Run tests to verify failure**
+
+Expected: analyzer missing.
+
+- [ ] **Step 3: Implement minimal analyzer**
+
+Compose existing window circuit construction, raw trajectory extraction, replay, and `find_k_terminal_prefix`.
+
+- [ ] **Step 4: Verify focused tests pass**
+
+Run the focused analyzer test.

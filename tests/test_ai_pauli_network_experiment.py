@@ -8,13 +8,16 @@ from pathlib import Path
 import pytest
 
 from ftcircuitbench.semi_pbc.ai_pauli_network import (
+    PauliNetworkWindow,
     _capture_process_output,
     ai_pauli_network_dependency_status,
+    analyze_ai_pauli_window_trajectory,
     build_pauli_network_circuit,
     build_rotation_region_circuit,
     circuit_metrics,
     circuits_equivalent,
     decode_ai_pauli_solution,
+    extract_ai_pauli_trajectory,
     extract_rotation_regions,
     extract_supported_rotation_windows,
     find_k_terminal_prefix,
@@ -375,6 +378,60 @@ t_pauli +ZIIZ;""",
     }
 
 
+def test_benchmark_pbc_files_can_analyze_ranked_window_trajectories(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from benchmark_ai_pauli_network_synthesis import benchmark_pbc_files
+
+    pbc = tmp_path / "toy_pbc_post_opt.txt"
+    pbc.write_text(
+        """qreg q[4];
+t_pauli +ZZII;
+t_pauli +IZZI;
+t_pauli -IIZZ;
+t_pauli +ZIIZ;""",
+        encoding="utf-8",
+    )
+
+    def fake_analyze(window, **kwargs):
+        assert window.num_qubits == 4
+        assert kwargs["k"] == 2
+        return {
+            "status": "ok",
+            "full_trajectory_length": 12,
+            "k_terminal_prefix_length": 5,
+            "pending_terms": ["+ZZII", "+IIZZ"],
+            "pending_weights": [2, 2],
+            "emissions_before_prefix": 1,
+            "total_emissions": 4,
+            "error": "",
+        }
+
+    monkeypatch.setattr(
+        "benchmark_ai_pauli_network_synthesis.analyze_ai_pauli_window_trajectory",
+        fake_analyze,
+    )
+
+    summary = benchmark_pbc_files(
+        paths=[pbc],
+        out_dir=tmp_path / "out",
+        max_windows_per_file=1,
+        max_files=None,
+        window_terms=4,
+        max_threads=1,
+        include_qasm=False,
+        trajectory_k="floor-half",
+    )
+
+    assert summary["windows_run"] == 1
+    assert summary["ok"] == 1
+    assert summary["trajectory_prefix_length_total"] == 5
+    record = json.loads((tmp_path / "out" / "results.jsonl").read_text())
+    assert record["result"]["k_terminal_prefix_length"] == 5
+    assert record["window"]["source_ids"] == ["line2", "line3", "line4", "line5"]
+
+
 def test_decode_ai_pauli_solution_decodes_gate_and_rotation_markers() -> None:
     rotation_marker = 0x80000000 | (2 << 21) | (3 << 11) | (5 << 1) | 1
 
@@ -436,3 +493,186 @@ def test_find_k_terminal_prefix_returns_first_all_pending_weights_under_cap() ->
     assert terminal.prefix_length == 1
     assert terminal.pending_terms == ("+ZI", "+XI")
     assert terminal.pending_weights == (1, 1)
+
+
+def test_extract_ai_pauli_trajectory_skips_when_dependency_missing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network.ai_pauli_network_dependency_status",
+        lambda: {
+            "available": False,
+            "qiskit_version": "2.0.2",
+            "qiskit_ibm_transpiler_version": "",
+            "reason": "missing qiskit_ibm_transpiler",
+        },
+    )
+
+    result = extract_ai_pauli_trajectory(
+        circuit=build_pauli_network_circuit(num_qubits=1, signed_paulis=("+Z",)),
+        coupling_map=[],
+    )
+
+    assert result["status"] == "skipped"
+    assert result["raw_actions"] is None
+    assert result["error"] == "missing qiskit_ibm_transpiler"
+
+
+def test_extract_ai_pauli_trajectory_uses_model_algorithm_actions(monkeypatch) -> None:
+    calls = {}
+
+    class FakeEnv:
+        def get_state(self, circuit):
+            calls["prepared_width"] = circuit.num_qubits
+            return [9, 8, 7]
+
+    class FakeAlgorithm:
+        def solve(
+            self,
+            state,
+            deterministic,
+            num_searches,
+            num_mcts_searches,
+            c,
+            max_expand_depth,
+        ):
+            os.write(2, b"solver diagnostic\n")
+            calls["solve"] = (
+                state,
+                deterministic,
+                num_searches,
+                num_mcts_searches,
+                c,
+                max_expand_depth,
+            )
+            return [0, 0x80000000 | (2 << 21) | (0 << 11) | (0 << 1) | 1]
+
+    class FakeModel:
+        def __init__(self):
+            self.env = FakeEnv()
+            self.algorithm = FakeAlgorithm()
+            self.env_config = {
+                "num_qubits": 2,
+                "gateset": [("cx", (0, 1))],
+            }
+
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network.ai_pauli_network_dependency_status",
+        lambda: {
+            "available": True,
+            "qiskit_version": "2.5.2",
+            "qiskit_ibm_transpiler_version": "0.18.0",
+            "reason": "",
+        },
+    )
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network._load_ai_pauli_model_repository",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network._select_ai_pauli_model_record",
+        lambda repo, coupling_map, qargs: (
+            type("Record", (), {"model": FakeModel(), "coupling_map": [(0, 1)]})(),
+            [0, 1],
+        ),
+    )
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network._prepare_ai_pauli_input",
+        lambda circuit, subgraph_perm, target_qubits: circuit,
+    )
+
+    result = extract_ai_pauli_trajectory(
+        circuit=build_pauli_network_circuit(num_qubits=2, signed_paulis=("+ZZ",)),
+        coupling_map=[(0, 1)],
+        deterministic=True,
+        num_searches=3,
+        num_mcts_searches=2,
+        c=1.25,
+        max_expand_depth=4,
+    )
+
+    assert result["status"] == "ok"
+    assert result["raw_actions"] == [
+        0,
+        0x80000000 | (2 << 21) | (0 << 11) | (0 << 1) | 1,
+    ]
+    assert result["decoded_solution"] == [("gate", 0, 0, 0), ("rz", 0, 0, 1)]
+    assert result["gateset"] == [("cx", (0, 1))]
+    assert result["solver_output_lines"] == 1
+    assert "solver diagnostic" in result["solver_output_excerpt"]
+    assert calls["solve"] == ([9, 8, 7], True, 3, 2, 1.25, 4)
+
+
+def test_analyze_ai_pauli_window_trajectory_reports_k_terminal_metrics(
+    monkeypatch,
+) -> None:
+    window = PauliNetworkWindow(
+        source_path="toy_pbc.txt",
+        start_op_id=0,
+        stop_op_id=1,
+        source_ids=("line2", "line3"),
+        original_qubits=(0, 1),
+        num_qubits=2,
+        signed_paulis=("+ZZ", "+XI"),
+        total_pauli_weight=3,
+        multi_qubit_terms=1,
+        topology="line",
+        coupling_map=((0, 1),),
+    )
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network.extract_ai_pauli_trajectory",
+        lambda **kwargs: {
+            "status": "ok",
+            "raw_actions": [0, 0x80400001, 0x80000003],
+            "decoded_solution": [
+                ("gate", 0, 0, 0),
+                ("rz", 0, 0, 1),
+                ("rx", 0, 1, 1),
+            ],
+            "gateset": [("cx", (0, 1))],
+            "num_qubits": 2,
+            "error": "",
+        },
+    )
+
+    result = analyze_ai_pauli_window_trajectory(window, k=1)
+
+    assert result["status"] == "ok"
+    assert result["full_trajectory_length"] == 3
+    assert result["k_terminal_prefix_length"] == 1
+    assert result["pending_terms"] == ["+ZI", "+XI"]
+    assert result["pending_weights"] == [1, 1]
+    assert result["emissions_before_prefix"] == 0
+
+
+def test_analyze_ai_pauli_window_trajectory_uses_parsed_rotation_signs(
+    monkeypatch,
+) -> None:
+    window = PauliNetworkWindow(
+        source_path="toy_pbc.txt",
+        start_op_id=0,
+        stop_op_id=0,
+        source_ids=("line2",),
+        original_qubits=(0, 1),
+        num_qubits=2,
+        signed_paulis=("-ZZ",),
+        total_pauli_weight=2,
+        multi_qubit_terms=1,
+        topology="line",
+        coupling_map=((0, 1),),
+    )
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network.extract_ai_pauli_trajectory",
+        lambda **kwargs: {
+            "status": "ok",
+            "raw_actions": [0, 0x80400001],
+            "decoded_solution": [("gate", 0, 0, 0), ("rz", 0, 0, 1)],
+            "gateset": [("cx", (0, 1))],
+            "num_qubits": 2,
+            "error": "",
+        },
+    )
+
+    result = analyze_ai_pauli_window_trajectory(window, k=1)
+
+    assert result["status"] == "ok"
+    assert result["pending_terms"] == ["+ZI"]
+    assert result["rotation_angle_signs"] == [-1]
