@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import builtins
 import json
+import os
 from pathlib import Path
 
 from ftcircuitbench.semi_pbc.ai_pauli_network import (
+    _capture_process_output,
     ai_pauli_network_dependency_status,
     build_pauli_network_circuit,
+    build_rotation_region_circuit,
     circuit_metrics,
+    extract_rotation_regions,
     extract_supported_rotation_windows,
     run_ai_pauli_network_synthesis,
 )
@@ -140,6 +144,7 @@ t_pauli +ZIIZ;""",
     def fake_run(**kwargs):
         assert kwargs["num_qubits"] == 4
         assert kwargs["coupling_map"] == [(0, 1), (1, 2), (2, 3)]
+        assert kwargs["capture_pass_output"] is True
         return {
             "status": "ok",
             "dependency": {"available": True},
@@ -175,3 +180,109 @@ t_pauli +ZIIZ;""",
     assert len(result_lines) == 1
     assert "optimized_qasm" not in json.loads(result_lines[0])["result"]
     assert (tmp_path / "out" / "summary.json").exists()
+
+
+def test_extract_rotation_regions_splits_on_measurements() -> None:
+    program = parse_pbc_text(
+        """qreg q[4];
+t_pauli +ZZII;
+t_pauli +IZZI;
+m_pauli +ZIII;
+t_pauli -IIZZ;
+t_pauli +ZIIZ;"""
+    )
+
+    regions = extract_rotation_regions(
+        program,
+        source_path=Path("toy_pbc.txt"),
+        max_regions=10,
+        min_terms=2,
+    )
+
+    assert len(regions) == 2
+    assert regions[0].source_ids == ("line2", "line3")
+    assert regions[1].source_ids == ("line5", "line6")
+    assert regions[0].signed_paulis == ("+ZZII", "+IZZI")
+
+
+def test_build_rotation_region_circuit_uses_full_program_width() -> None:
+    program = parse_pbc_text(
+        """qreg q[4];
+t_pauli +ZZII;
+t_pauli +IIIZ;"""
+    )
+    region = extract_rotation_regions(
+        program,
+        source_path=Path("toy_pbc.txt"),
+        max_regions=1,
+        min_terms=2,
+    )[0]
+
+    circuit = build_rotation_region_circuit(region)
+
+    assert circuit.num_qubits == 4
+    assert circuit.count_ops()["rz"] == 2
+
+
+def test_benchmark_pbc_files_can_use_collect_pauli_networks_selection(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from benchmark_ai_pauli_network_synthesis import benchmark_pbc_files
+
+    pbc = tmp_path / "toy_pbc_post_opt.txt"
+    pbc.write_text(
+        """qreg q[4];
+t_pauli +ZZII;
+t_pauli +IZZI;
+t_pauli -IIZZ;
+t_pauli +ZIIZ;""",
+        encoding="utf-8",
+    )
+
+    def fake_run(**kwargs):
+        assert kwargs["circuit"].num_qubits == 4
+        assert kwargs["coupling_map"] == [(0, 1), (1, 2), (2, 3)]
+        assert kwargs["capture_pass_output"] is True
+        return {
+            "status": "ok",
+            "dependency": {"available": True},
+            "before": {"ops": 12, "depth": 12, "two_qubit_ops": 8},
+            "after": {"ops": 10, "depth": 9, "two_qubit_ops": 6},
+            "seconds": 0.25,
+            "error": "",
+            "changed": True,
+            "optimized_qasm": "OPENQASM 2.0;",
+        }
+
+    monkeypatch.setattr(
+        "benchmark_ai_pauli_network_synthesis.run_ai_pauli_network_synthesis_on_circuit",
+        fake_run,
+    )
+
+    summary = benchmark_pbc_files(
+        paths=[pbc],
+        out_dir=tmp_path / "out",
+        max_windows_per_file=1,
+        max_files=None,
+        window_terms=4,
+        max_threads=1,
+        include_qasm=False,
+        selection="collect-pauli-networks",
+        max_regions_per_file=1,
+        min_region_terms=4,
+    )
+
+    assert summary["regions_run"] == 1
+    assert summary["windows_run"] == 0
+    assert summary["metric_improved"] == 1
+    record = json.loads((tmp_path / "out" / "results.jsonl").read_text())
+    assert record["selection"] == "collect-pauli-networks"
+    assert record["region"]["source_ids"] == ["line2", "line3", "line4", "line5"]
+
+
+def test_capture_process_output_catches_fd_writes() -> None:
+    with _capture_process_output() as captured:
+        os.write(2, b"fd-level diagnostic\n")
+
+    assert "fd-level diagnostic" in captured.getvalue()

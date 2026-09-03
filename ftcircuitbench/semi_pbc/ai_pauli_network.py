@@ -3,13 +3,17 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.metadata
 import importlib.util
+import io
 import math
+import os
 import sys
 import time
 import types
 from collections.abc import Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryFile
 from typing import Any
 
 import numpy as np
@@ -37,6 +41,20 @@ class PauliNetworkWindow:
     stop_op_id: int
     source_ids: tuple[str, ...]
     original_qubits: tuple[int, ...]
+    num_qubits: int
+    signed_paulis: tuple[str, ...]
+    total_pauli_weight: int
+    multi_qubit_terms: int
+    topology: str
+    coupling_map: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
+class PauliNetworkRegion:
+    source_path: str
+    start_op_id: int
+    stop_op_id: int
+    source_ids: tuple[str, ...]
     num_qubits: int
     signed_paulis: tuple[str, ...]
     total_pauli_weight: int
@@ -111,11 +129,33 @@ def run_ai_pauli_network_synthesis(
     local_mode: bool = True,
     replace_only_if_better: bool = True,
     max_threads: int | None = None,
+    capture_pass_output: bool = False,
 ) -> dict[str, Any]:
     circuit = build_pauli_network_circuit(
         num_qubits=num_qubits,
         signed_paulis=signed_paulis,
     )
+    return run_ai_pauli_network_synthesis_on_circuit(
+        circuit=circuit,
+        backend_name=backend_name,
+        coupling_map=coupling_map,
+        local_mode=local_mode,
+        replace_only_if_better=replace_only_if_better,
+        max_threads=max_threads,
+        capture_pass_output=capture_pass_output,
+    )
+
+
+def run_ai_pauli_network_synthesis_on_circuit(
+    *,
+    circuit: QuantumCircuit,
+    backend_name: str | None = None,
+    coupling_map: list[tuple[int, int]] | None = None,
+    local_mode: bool = True,
+    replace_only_if_better: bool = True,
+    max_threads: int | None = None,
+    capture_pass_output: bool = False,
+) -> dict[str, Any]:
     before = circuit_metrics(circuit)
     status = ai_pauli_network_dependency_status()
     if not status["available"]:
@@ -134,7 +174,7 @@ def run_ai_pauli_network_synthesis(
         from qiskit_ibm_transpiler.ai.synthesis import AIPauliNetworkSynthesis
 
         if backend_name is None and coupling_map is None:
-            coupling_map = _all_to_all_coupling_map(num_qubits)
+            coupling_map = _all_to_all_coupling_map(circuit.num_qubits)
         kwargs: dict[str, Any] = {
             "local_mode": local_mode,
             "replace_only_if_better": replace_only_if_better,
@@ -153,7 +193,12 @@ def run_ai_pauli_network_synthesis(
             ]
         )
         start = time.perf_counter()
-        optimized = pass_manager.run(circuit)
+        if capture_pass_output:
+            with _capture_process_output() as output:
+                optimized = pass_manager.run(circuit)
+        else:
+            output = io.StringIO()
+            optimized = pass_manager.run(circuit)
         seconds = time.perf_counter() - start
     except Exception as exc:  # noqa: BLE001 - report pass failures as experiment data.
         return {
@@ -175,7 +220,68 @@ def run_ai_pauli_network_synthesis(
         "error": "",
         "changed": after != before,
         "optimized_qasm": qasm2.dumps(optimized),
+        "pass_output": output.getvalue() if capture_pass_output else "",
     }
+
+
+def extract_rotation_regions(
+    program: PBCProgram,
+    *,
+    source_path: str | Path,
+    max_regions: int,
+    min_terms: int = 4,
+    max_terms: int | None = None,
+    topology: str = "line",
+) -> list[PauliNetworkRegion]:
+    if max_regions < 1:
+        return []
+    if min_terms < 1:
+        raise ValueError("min_terms must be >= 1")
+    if max_terms is not None and max_terms < min_terms:
+        raise ValueError("max_terms must be >= min_terms")
+    if topology not in {key[0] for key in _SUPPORTED_TOPOLOGIES}:
+        raise ValueError(f"unsupported topology {topology!r}")
+
+    regions: list[PauliNetworkRegion] = []
+    current = []
+    for op in program.ops:
+        if op.op == "t_pauli":
+            current.append(op)
+            continue
+        _append_rotation_region(
+            regions,
+            current,
+            program=program,
+            source_path=source_path,
+            min_terms=min_terms,
+            max_terms=max_terms,
+            topology=topology,
+        )
+        current = []
+    _append_rotation_region(
+        regions,
+        current,
+        program=program,
+        source_path=source_path,
+        min_terms=min_terms,
+        max_terms=max_terms,
+        topology=topology,
+    )
+    return sorted(
+        regions,
+        key=lambda region: (
+            -region.total_pauli_weight,
+            -region.multi_qubit_terms,
+            region.start_op_id,
+        ),
+    )[:max_regions]
+
+
+def build_rotation_region_circuit(region: PauliNetworkRegion) -> QuantumCircuit:
+    return build_pauli_network_circuit(
+        num_qubits=region.num_qubits,
+        signed_paulis=region.signed_paulis,
+    )
 
 
 def extract_supported_rotation_windows(
@@ -289,6 +395,49 @@ def _compress_source_pauli(signed_pauli: str, reindex: dict[int, int]) -> str:
     return signed_pauli[0] + "".join(compressed)
 
 
+def _append_rotation_region(
+    regions: list[PauliNetworkRegion],
+    ops: list[Any],
+    *,
+    program: PBCProgram,
+    source_path: str | Path,
+    min_terms: int,
+    max_terms: int | None,
+    topology: str,
+) -> None:
+    if len(ops) < min_terms:
+        return
+    selected_ops = ops[:max_terms] if max_terms is not None else ops
+    coupling_map = _region_coupling_map(program.data_qubits, topology)
+    if coupling_map is None:
+        return
+    regions.append(
+        PauliNetworkRegion(
+            source_path=str(source_path),
+            start_op_id=selected_ops[0].id,
+            stop_op_id=selected_ops[-1].id,
+            source_ids=tuple(op.source_id for op in selected_ops),
+            num_qubits=program.data_qubits,
+            signed_paulis=tuple(
+                op.term.to_full_width(program.data_qubits) for op in selected_ops
+            ),
+            total_pauli_weight=sum(op.term.weight for op in selected_ops),
+            multi_qubit_terms=sum(op.term.weight > 1 for op in selected_ops),
+            topology=topology,
+            coupling_map=tuple(coupling_map),
+        )
+    )
+
+
+def _region_coupling_map(
+    num_qubits: int,
+    topology: str,
+) -> list[tuple[int, int]] | None:
+    if topology == "line":
+        return [(qubit, qubit + 1) for qubit in range(num_qubits - 1)]
+    return _SUPPORTED_TOPOLOGIES.get((topology, num_qubits))
+
+
 def _package_version(package: str) -> str:
     try:
         return importlib.metadata.version(package)
@@ -316,6 +465,25 @@ def _install_qiskit_compatibility_shims() -> None:
     module.__spec__ = importlib.machinery.ModuleSpec(module_name, loader=None)
     module.random_invertible_binary_matrix = _random_invertible_binary_matrix
     sys.modules[module_name] = module
+
+
+@contextmanager
+def _capture_process_output():
+    captured = io.StringIO()
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    with TemporaryFile(mode="w+b") as sink:
+        try:
+            os.dup2(sink.fileno(), 1)
+            os.dup2(sink.fileno(), 2)
+            yield captured
+        finally:
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+            sink.seek(0)
+            captured.write(sink.read().decode("utf-8", errors="replace"))
 
 
 def _random_invertible_binary_matrix(n: int, seed: int | None = None) -> np.ndarray:
