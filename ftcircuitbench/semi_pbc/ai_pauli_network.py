@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 from qiskit import QuantumCircuit, qasm2
+from qiskit.quantum_info import Operator
 from qiskit.transpiler import PassManager
 
 from ftcircuitbench.semi_pbc.pbc_input import PBCProgram
@@ -118,6 +119,15 @@ def circuit_metrics(circuit: QuantumCircuit) -> dict[str, Any]:
         "two_qubit_ops": two_qubit_ops,
         "counts": counts,
     }
+
+
+def circuits_equivalent(
+    original: QuantumCircuit,
+    candidate: QuantumCircuit,
+) -> bool:
+    if original.num_qubits != candidate.num_qubits:
+        return False
+    return bool(Operator(original).equiv(Operator(candidate)))
 
 
 def run_ai_pauli_network_synthesis(

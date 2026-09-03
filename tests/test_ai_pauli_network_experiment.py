@@ -11,6 +11,7 @@ from ftcircuitbench.semi_pbc.ai_pauli_network import (
     build_pauli_network_circuit,
     build_rotation_region_circuit,
     circuit_metrics,
+    circuits_equivalent,
     extract_rotation_regions,
     extract_supported_rotation_windows,
     run_ai_pauli_network_synthesis,
@@ -286,3 +287,84 @@ def test_capture_process_output_catches_fd_writes() -> None:
         os.write(2, b"fd-level diagnostic\n")
 
     assert "fd-level diagnostic" in captured.getvalue()
+
+
+def test_circuits_equivalent_accepts_same_unitary() -> None:
+    original = build_pauli_network_circuit(
+        num_qubits=2,
+        signed_paulis=("+ZZ",),
+    )
+    same = build_pauli_network_circuit(
+        num_qubits=2,
+        signed_paulis=("+ZZ",),
+    )
+    different = build_pauli_network_circuit(
+        num_qubits=2,
+        signed_paulis=("-ZZ",),
+    )
+
+    assert circuits_equivalent(original, same)
+    assert not circuits_equivalent(original, different)
+
+
+def test_benchmark_emits_equivalent_improved_ranked_window_candidate(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from qiskit import qasm2
+
+    from benchmark_ai_pauli_network_synthesis import benchmark_pbc_files
+
+    pbc = tmp_path / "toy_pbc_post_opt.txt"
+    pbc.write_text(
+        """qreg q[4];
+t_pauli +ZZII;
+t_pauli +IZZI;
+t_pauli -IIZZ;
+t_pauli +ZIIZ;""",
+        encoding="utf-8",
+    )
+
+    def fake_run(**kwargs):
+        original = build_pauli_network_circuit(
+            num_qubits=kwargs["num_qubits"],
+            signed_paulis=kwargs["signed_paulis"],
+        )
+        return {
+            "status": "ok",
+            "dependency": {"available": True},
+            "before": {"ops": 12, "depth": 12, "two_qubit_ops": 8},
+            "after": {"ops": 10, "depth": 9, "two_qubit_ops": 6},
+            "seconds": 0.1,
+            "error": "",
+            "changed": True,
+            "optimized_qasm": qasm2.dumps(original),
+        }
+
+    monkeypatch.setattr(
+        "benchmark_ai_pauli_network_synthesis.run_ai_pauli_network_synthesis",
+        fake_run,
+    )
+
+    summary = benchmark_pbc_files(
+        paths=[pbc],
+        out_dir=tmp_path / "out",
+        max_windows_per_file=1,
+        max_files=None,
+        window_terms=4,
+        max_threads=1,
+        include_qasm=False,
+        emit_candidates=True,
+    )
+
+    assert summary["candidates_emitted"] == 1
+    assert summary["candidate_equivalent"] == 1
+    candidate = json.loads((tmp_path / "out" / "candidate_replacements.jsonl").read_text())
+    assert candidate["equivalent"] is True
+    assert candidate["selection"] == "ranked-window"
+    assert candidate["window"]["source_ids"] == ["line2", "line3", "line4", "line5"]
+    assert candidate["delta"] == {
+        "depth": -3,
+        "ops": -2,
+        "two_qubit_ops": -2,
+    }

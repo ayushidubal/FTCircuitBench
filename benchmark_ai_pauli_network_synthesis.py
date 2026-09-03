@@ -6,8 +6,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from qiskit import qasm2
+
 from ftcircuitbench.semi_pbc.ai_pauli_network import (
+    build_pauli_network_circuit,
     build_rotation_region_circuit,
+    circuits_equivalent,
     extract_rotation_regions,
     extract_supported_rotation_windows,
     run_ai_pauli_network_synthesis,
@@ -31,9 +35,11 @@ def benchmark_pbc_files(
     min_region_terms: int = 4,
     max_region_terms: int | None = None,
     capture_pass_output: bool = True,
+    emit_candidates: bool = False,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     result_path = out_dir / "results.jsonl"
+    candidate_path = out_dir / "candidate_replacements.jsonl"
 
     summary: dict[str, Any] = {
         "files_seen": 0,
@@ -51,68 +57,89 @@ def benchmark_pbc_files(
         "delta_ops": 0,
         "delta_depth": 0,
         "delta_two_qubit_ops": 0,
+        "candidates_emitted": 0,
+        "candidate_equivalent": 0,
+        "candidate_not_equivalent": 0,
         "seconds": 0.0,
     }
 
     selected_paths = paths[:max_files] if max_files is not None else paths
     with result_path.open("w", encoding="utf-8") as result_file:
+        candidate_file = (
+            candidate_path.open("w", encoding="utf-8") if emit_candidates else None
+        )
         for path in selected_paths:
-            summary["files_seen"] += 1
-            program = parse_pbc_file(path)
-            if selection == "ranked-window":
-                windows = extract_supported_rotation_windows(
-                    program,
-                    source_path=path,
-                    max_windows=max_windows_per_file,
-                    window_terms=window_terms,
-                    topology=topology,
-                )
-                if windows:
-                    summary["files_with_windows"] += 1
-                for window in windows:
-                    result = run_ai_pauli_network_synthesis(
-                        num_qubits=window.num_qubits,
-                        signed_paulis=window.signed_paulis,
-                        coupling_map=list(window.coupling_map),
-                        max_threads=max_threads,
-                        capture_pass_output=capture_pass_output,
+            try:
+                summary["files_seen"] += 1
+                program = parse_pbc_file(path)
+                if selection == "ranked-window":
+                    windows = extract_supported_rotation_windows(
+                        program,
+                        source_path=path,
+                        max_windows=max_windows_per_file,
+                        window_terms=window_terms,
+                        topology=topology,
                     )
-                    _write_result(
-                        result_file,
-                        selection=selection,
-                        result=result,
-                        include_qasm=include_qasm,
-                        window=asdict(window),
+                    if windows:
+                        summary["files_with_windows"] += 1
+                    for window in windows:
+                        result = run_ai_pauli_network_synthesis(
+                            num_qubits=window.num_qubits,
+                            signed_paulis=window.signed_paulis,
+                            coupling_map=list(window.coupling_map),
+                            max_threads=max_threads,
+                            capture_pass_output=capture_pass_output,
+                        )
+                        window_dict = asdict(window)
+                        _write_result(
+                            result_file,
+                            selection=selection,
+                            result=result,
+                            include_qasm=include_qasm,
+                            window=window_dict,
+                        )
+                        _update_summary(summary, result, kind="window")
+                        if candidate_file is not None:
+                            _maybe_write_candidate(
+                                candidate_file,
+                                summary,
+                                selection=selection,
+                                result=result,
+                                window=window_dict,
+                            )
+                elif selection == "collect-pauli-networks":
+                    regions = extract_rotation_regions(
+                        program,
+                        source_path=path,
+                        max_regions=max_regions_per_file,
+                        min_terms=min_region_terms,
+                        max_terms=max_region_terms,
+                        topology=topology,
                     )
-                    _update_summary(summary, result, kind="window")
-            elif selection == "collect-pauli-networks":
-                regions = extract_rotation_regions(
-                    program,
-                    source_path=path,
-                    max_regions=max_regions_per_file,
-                    min_terms=min_region_terms,
-                    max_terms=max_region_terms,
-                    topology=topology,
-                )
-                if regions:
-                    summary["files_with_regions"] += 1
-                for region in regions:
-                    result = run_ai_pauli_network_synthesis_on_circuit(
-                        circuit=build_rotation_region_circuit(region),
-                        coupling_map=list(region.coupling_map),
-                        max_threads=max_threads,
-                        capture_pass_output=capture_pass_output,
-                    )
-                    _write_result(
-                        result_file,
-                        selection=selection,
-                        result=result,
-                        include_qasm=include_qasm,
-                        region=asdict(region),
-                    )
-                    _update_summary(summary, result, kind="region")
-            else:
-                raise ValueError(f"unsupported selection {selection!r}")
+                    if regions:
+                        summary["files_with_regions"] += 1
+                    for region in regions:
+                        result = run_ai_pauli_network_synthesis_on_circuit(
+                            circuit=build_rotation_region_circuit(region),
+                            coupling_map=list(region.coupling_map),
+                            max_threads=max_threads,
+                            capture_pass_output=capture_pass_output,
+                        )
+                        _write_result(
+                            result_file,
+                            selection=selection,
+                            result=result,
+                            include_qasm=include_qasm,
+                            region=asdict(region),
+                        )
+                        _update_summary(summary, result, kind="region")
+                else:
+                    raise ValueError(f"unsupported selection {selection!r}")
+            finally:
+                if candidate_file is not None:
+                    candidate_file.flush()
+        if candidate_file is not None:
+            candidate_file.close()
 
     summary["seconds"] = round(float(summary["seconds"]), 6)
     summary_path = out_dir / "summary.json"
@@ -153,6 +180,51 @@ def _write_result(
     result_file.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+def _maybe_write_candidate(
+    candidate_file: Any,
+    summary: dict[str, Any],
+    *,
+    selection: str,
+    result: dict[str, Any],
+    window: dict[str, Any],
+) -> None:
+    before = result.get("before")
+    after = result.get("after")
+    optimized_qasm = result.get("optimized_qasm")
+    if result.get("status") != "ok" or before is None or after is None:
+        return
+    delta = _metric_delta(before, after)
+    if (delta["two_qubit_ops"], delta["depth"], delta["ops"]) >= (0, 0, 0):
+        return
+    if not isinstance(optimized_qasm, str) or not optimized_qasm:
+        return
+
+    original = build_pauli_network_circuit(
+        num_qubits=window["num_qubits"],
+        signed_paulis=window["signed_paulis"],
+    )
+    candidate = qasm2.loads(optimized_qasm)
+    equivalent = circuits_equivalent(original, candidate)
+    summary["candidates_emitted"] += 1
+    if equivalent:
+        summary["candidate_equivalent"] += 1
+    else:
+        summary["candidate_not_equivalent"] += 1
+    candidate_file.write(
+        json.dumps(
+            {
+                "selection": selection,
+                "window": window,
+                "delta": delta,
+                "equivalent": equivalent,
+                "optimized_qasm": optimized_qasm,
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
 def _update_summary(
     summary: dict[str, Any],
     result: dict[str, Any],
@@ -174,19 +246,25 @@ def _update_summary(
     after = result.get("after")
     if before is None or after is None:
         return
-    delta_ops = int(after["ops"]) - int(before["ops"])
-    delta_depth = int(after["depth"]) - int(before["depth"])
-    delta_two_qubit_ops = int(after["two_qubit_ops"]) - int(before["two_qubit_ops"])
-    summary["delta_ops"] += delta_ops
-    summary["delta_depth"] += delta_depth
-    summary["delta_two_qubit_ops"] += delta_two_qubit_ops
-    objective_delta = (delta_two_qubit_ops, delta_depth, delta_ops)
+    delta = _metric_delta(before, after)
+    summary["delta_ops"] += delta["ops"]
+    summary["delta_depth"] += delta["depth"]
+    summary["delta_two_qubit_ops"] += delta["two_qubit_ops"]
+    objective_delta = (delta["two_qubit_ops"], delta["depth"], delta["ops"])
     if objective_delta < (0, 0, 0):
         summary["metric_improved"] += 1
     elif objective_delta > (0, 0, 0):
         summary["metric_worse"] += 1
     else:
         summary["metric_unchanged"] += 1
+
+
+def _metric_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, int]:
+    return {
+        "ops": int(after["ops"]) - int(before["ops"]),
+        "depth": int(after["depth"]) - int(before["depth"]),
+        "two_qubit_ops": int(after["two_qubit_ops"]) - int(before["two_qubit_ops"]),
+    }
 
 
 def main() -> int:
@@ -211,6 +289,11 @@ def main() -> int:
     parser.add_argument("--max-threads", type=int)
     parser.add_argument("--include-qasm", action="store_true")
     parser.add_argument(
+        "--emit-candidates",
+        action="store_true",
+        help="Write improved ranked-window replacements with equivalence checks.",
+    )
+    parser.add_argument(
         "--show-pass-output",
         action="store_true",
         help="Let IBM synthesis diagnostics print to the terminal.",
@@ -232,6 +315,7 @@ def main() -> int:
         min_region_terms=args.min_region_terms,
         max_region_terms=args.max_region_terms,
         capture_pass_output=not args.show_pass_output,
+        emit_candidates=args.emit_candidates,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
