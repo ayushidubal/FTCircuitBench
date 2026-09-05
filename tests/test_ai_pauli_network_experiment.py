@@ -432,6 +432,71 @@ t_pauli +ZIIZ;""",
     assert record["window"]["source_ids"] == ["line2", "line3", "line4", "line5"]
 
 
+def test_benchmark_pbc_files_records_failed_window_and_continues(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from benchmark_ai_pauli_network_synthesis import benchmark_pbc_files
+
+    pbc = tmp_path / "toy_pbc_post_opt.txt"
+    pbc.write_text(
+        """qreg q[4];
+t_pauli +ZZII;
+t_pauli +IZZI;
+t_pauli -IIZZ;
+t_pauli +ZIIZ;
+t_pauli +ZZZZ;""",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_analyze(window, **kwargs):
+        calls.append(window.source_ids)
+        if len(calls) == 1:
+            raise ValueError("pending Pauli is not weight 1: +ZIIX")
+        return {
+            "status": "ok",
+            "full_trajectory_length": 10,
+            "k_terminal_prefix_length": 4,
+            "pending_terms": ["+ZZII"],
+            "pending_weights": [2],
+            "emissions_before_prefix": 1,
+            "total_emissions": 4,
+            "error": "",
+        }
+
+    monkeypatch.setattr(
+        "benchmark_ai_pauli_network_synthesis.analyze_ai_pauli_window_trajectory",
+        fake_analyze,
+    )
+
+    summary = benchmark_pbc_files(
+        paths=[pbc],
+        out_dir=tmp_path / "out",
+        max_windows_per_file=2,
+        max_files=None,
+        window_terms=4,
+        max_threads=1,
+        include_qasm=False,
+        trajectory_k="floor-half",
+    )
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "out" / "results.jsonl").read_text().splitlines()
+    ]
+    written_summary = json.loads((tmp_path / "out" / "summary.json").read_text())
+
+    assert summary["windows_run"] == 2
+    assert summary["failed"] == 1
+    assert summary["ok"] == 1
+    assert written_summary == summary
+    assert len(records) == 2
+    assert records[0]["result"]["status"] == "failed"
+    assert "ValueError: pending Pauli is not weight 1" in records[0]["result"]["error"]
+    assert records[1]["result"]["status"] == "ok"
+
+
 def test_decode_ai_pauli_solution_decodes_gate_and_rotation_markers() -> None:
     rotation_marker = 0x80000000 | (2 << 21) | (3 << 11) | (5 << 1) | 1
 
@@ -601,6 +666,72 @@ def test_extract_ai_pauli_trajectory_uses_model_algorithm_actions(monkeypatch) -
     assert calls["solve"] == ([9, 8, 7], True, 3, 2, 1.25, 4)
 
 
+def test_extract_ai_pauli_trajectory_reports_prepared_replay_terms(
+    monkeypatch,
+) -> None:
+    class FakeEnv:
+        def get_state(self, circuit):
+            return []
+
+    class FakeAlgorithm:
+        def solve(
+            self,
+            state,
+            deterministic,
+            num_searches,
+            num_mcts_searches,
+            c,
+            max_expand_depth,
+        ):
+            return [0x80000000 | (2 << 21) | (0 << 11) | (0 << 1) | 1]
+
+    class FakeModel:
+        def __init__(self):
+            self.env = FakeEnv()
+            self.algorithm = FakeAlgorithm()
+            self.env_config = {
+                "num_qubits": 2,
+                "gateset": [],
+            }
+
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network.ai_pauli_network_dependency_status",
+        lambda: {
+            "available": True,
+            "qiskit_version": "2.5.2",
+            "qiskit_ibm_transpiler_version": "0.18.0",
+            "reason": "",
+        },
+    )
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network._load_ai_pauli_model_repository",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network._select_ai_pauli_model_record",
+        lambda repo, coupling_map, qargs: (
+            type("Record", (), {"model": FakeModel(), "coupling_map": [(0, 1)]})(),
+            [1, 0],
+        ),
+    )
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network._prepare_ai_pauli_input",
+        lambda circuit, subgraph_perm, target_qubits: build_pauli_network_circuit(
+            num_qubits=2,
+            signed_paulis=("+ZI",),
+        ),
+    )
+
+    result = extract_ai_pauli_trajectory(
+        circuit=build_pauli_network_circuit(num_qubits=2, signed_paulis=("+ZZ",)),
+        coupling_map=[(0, 1)],
+    )
+
+    assert result["status"] == "ok"
+    assert result["replay_terms"] == ["+ZI"]
+    assert result["rotation_angle_signs"] == [1]
+
+
 def test_analyze_ai_pauli_window_trajectory_reports_k_terminal_metrics(
     monkeypatch,
 ) -> None:
@@ -629,6 +760,8 @@ def test_analyze_ai_pauli_window_trajectory_reports_k_terminal_metrics(
             ],
             "gateset": [("cx", (0, 1))],
             "num_qubits": 2,
+            "replay_terms": ["+ZZ", "+XI"],
+            "rotation_angle_signs": [1, 1],
             "error": "",
         },
     )
@@ -641,6 +774,43 @@ def test_analyze_ai_pauli_window_trajectory_reports_k_terminal_metrics(
     assert result["pending_terms"] == ["+ZI", "+XI"]
     assert result["pending_weights"] == [1, 1]
     assert result["emissions_before_prefix"] == 0
+
+
+def test_analyze_ai_pauli_window_trajectory_replays_prepared_terms(
+    monkeypatch,
+) -> None:
+    window = PauliNetworkWindow(
+        source_path="toy_pbc.txt",
+        start_op_id=0,
+        stop_op_id=0,
+        source_ids=("line2",),
+        original_qubits=(0, 1),
+        num_qubits=2,
+        signed_paulis=("+ZZ",),
+        total_pauli_weight=2,
+        multi_qubit_terms=1,
+        topology="line",
+        coupling_map=((0, 1),),
+    )
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.ai_pauli_network.extract_ai_pauli_trajectory",
+        lambda **kwargs: {
+            "status": "ok",
+            "raw_actions": [0x80000001],
+            "decoded_solution": [("rx", 0, 0, 1)],
+            "gateset": [],
+            "num_qubits": 2,
+            "replay_terms": ["+XI"],
+            "rotation_angle_signs": [1],
+            "error": "",
+        },
+    )
+
+    result = analyze_ai_pauli_window_trajectory(window, k=1)
+
+    assert result["status"] == "ok"
+    assert result["k_terminal_prefix_length"] == 0
+    assert result["pending_terms"] == ["+XI"]
 
 
 def test_analyze_ai_pauli_window_trajectory_uses_parsed_rotation_signs(

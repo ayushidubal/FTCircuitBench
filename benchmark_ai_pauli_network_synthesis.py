@@ -88,20 +88,26 @@ def benchmark_pbc_files(
                     if windows:
                         summary["files_with_windows"] += 1
                     for window in windows:
-                        if trajectory_k is None:
-                            result = run_ai_pauli_network_synthesis(
-                                num_qubits=window.num_qubits,
-                                signed_paulis=window.signed_paulis,
-                                coupling_map=list(window.coupling_map),
-                                max_threads=max_threads,
-                                capture_pass_output=capture_pass_output,
-                            )
-                        else:
-                            result = analyze_ai_pauli_window_trajectory(
-                                window,
-                                k=_resolve_trajectory_k(trajectory_k, window.num_qubits),
-                            )
                         window_dict = asdict(window)
+                        try:
+                            if trajectory_k is None:
+                                result = run_ai_pauli_network_synthesis(
+                                    num_qubits=window.num_qubits,
+                                    signed_paulis=window.signed_paulis,
+                                    coupling_map=list(window.coupling_map),
+                                    max_threads=max_threads,
+                                    capture_pass_output=capture_pass_output,
+                                )
+                            else:
+                                result = analyze_ai_pauli_window_trajectory(
+                                    window,
+                                    k=_resolve_trajectory_k(
+                                        trajectory_k,
+                                        window.num_qubits,
+                                    ),
+                                )
+                        except Exception as exc:  # noqa: BLE001 - benchmarks must continue.
+                            result = _failed_result_from_exception(exc)
                         _write_result(
                             result_file,
                             selection=selection,
@@ -131,12 +137,15 @@ def benchmark_pbc_files(
                     if regions:
                         summary["files_with_regions"] += 1
                     for region in regions:
-                        result = run_ai_pauli_network_synthesis_on_circuit(
-                            circuit=build_rotation_region_circuit(region),
-                            coupling_map=list(region.coupling_map),
-                            max_threads=max_threads,
-                            capture_pass_output=capture_pass_output,
-                        )
+                        try:
+                            result = run_ai_pauli_network_synthesis_on_circuit(
+                                circuit=build_rotation_region_circuit(region),
+                                coupling_map=list(region.coupling_map),
+                                max_threads=max_threads,
+                                capture_pass_output=capture_pass_output,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - benchmarks must continue.
+                            result = _failed_result_from_exception(exc)
                         _write_result(
                             result_file,
                             selection=selection,
@@ -169,6 +178,14 @@ def find_pbc_files(inputs: list[Path], pattern: str) -> list[Path]:
         else:
             raise FileNotFoundError(path)
     return sorted(dict.fromkeys(files))
+
+
+def _failed_result_from_exception(exc: Exception) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "error": f"{type(exc).__name__}: {exc}",
+        "seconds": 0.0,
+    }
 
 
 def _write_result(

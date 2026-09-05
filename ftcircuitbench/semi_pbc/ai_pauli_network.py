@@ -379,11 +379,15 @@ def extract_ai_pauli_trajectory(
             "decoded_solution": None,
             "gateset": None,
             "num_qubits": circuit.num_qubits,
+            "replay_terms": None,
+            "rotation_angle_signs": None,
             "solver_output_lines": 0,
             "solver_output_excerpt": "",
             "error": status["reason"],
         }
 
+    replay_terms = None
+    rotation_angle_signs = None
     try:
         selected_qargs = list(range(circuit.num_qubits)) if qargs is None else list(qargs)
         model_repo = _load_ai_pauli_model_repository()
@@ -398,6 +402,9 @@ def extract_ai_pauli_trajectory(
             circuit,
             subgraph_perm,
             model_n_qubits,
+        )
+        replay_terms, rotation_angle_signs = _parse_ai_pauli_circuit_rotations(
+            prepared_input
         )
         state = model.env.get_state(prepared_input)
         with _capture_process_output() as solver_output:
@@ -419,6 +426,8 @@ def extract_ai_pauli_trajectory(
                 "decoded_solution": None,
                 "gateset": _normalise_gateset(model.env_config.get("gateset", [])),
                 "num_qubits": model_n_qubits,
+                "replay_terms": list(replay_terms),
+                "rotation_angle_signs": list(rotation_angle_signs),
                 **solver_output_fields,
                 "error": "AI Pauli solver returned no trajectory",
             }
@@ -432,6 +441,12 @@ def extract_ai_pauli_trajectory(
             "decoded_solution": None,
             "gateset": None,
             "num_qubits": circuit.num_qubits,
+            "replay_terms": list(replay_terms) if replay_terms is not None else None,
+            "rotation_angle_signs": (
+                list(rotation_angle_signs)
+                if rotation_angle_signs is not None
+                else None
+            ),
             "solver_output_lines": 0,
             "solver_output_excerpt": "",
             "error": f"{type(exc).__name__}: {exc}",
@@ -446,6 +461,8 @@ def extract_ai_pauli_trajectory(
         "gateset": _normalise_gateset(model.env_config.get("gateset", [])),
         "num_qubits": model_n_qubits,
         "subgraph_perm": list(subgraph_perm),
+        "replay_terms": list(replay_terms),
+        "rotation_angle_signs": list(rotation_angle_signs),
         **solver_output_fields,
         "error": "",
     }
@@ -465,7 +482,6 @@ def analyze_ai_pauli_window_trajectory(
         num_qubits=window.num_qubits,
         signed_paulis=window.signed_paulis,
     )
-    replay_terms, rotation_angle_signs = _parse_ai_pauli_circuit_rotations(circuit)
     trajectory = extract_ai_pauli_trajectory(
         circuit=circuit,
         coupling_map=window.coupling_map,
@@ -478,17 +494,32 @@ def analyze_ai_pauli_window_trajectory(
     if trajectory["status"] != "ok":
         return trajectory
 
-    replay = replay_ai_pauli_solution(
-        num_qubits=int(trajectory["num_qubits"]),
-        signed_paulis=replay_terms,
-        gateset=trajectory["gateset"],
-        solution=trajectory["decoded_solution"],
-    )
-    terminal = find_k_terminal_prefix(replay, k=k)
-    emissions_before_prefix = sum(
-        emission.prefix_length <= terminal.prefix_length
-        for emission in replay.emissions
-    )
+    replay_terms = trajectory.get("replay_terms")
+    rotation_angle_signs = trajectory.get("rotation_angle_signs")
+    if replay_terms is None or rotation_angle_signs is None:
+        replay_terms, rotation_angle_signs = _parse_ai_pauli_circuit_rotations(circuit)
+
+    try:
+        replay = replay_ai_pauli_solution(
+            num_qubits=int(trajectory["num_qubits"]),
+            signed_paulis=replay_terms,
+            gateset=trajectory["gateset"],
+            solution=trajectory["decoded_solution"],
+        )
+        terminal = find_k_terminal_prefix(replay, k=k)
+        emissions_before_prefix = sum(
+            emission.prefix_length <= terminal.prefix_length
+            for emission in replay.emissions
+        )
+    except Exception as exc:  # noqa: BLE001 - experiments should report failures.
+        return {
+            **trajectory,
+            "status": "failed",
+            "full_trajectory_length": len(trajectory.get("raw_actions") or []),
+            "replay_terms": list(replay_terms),
+            "rotation_angle_signs": list(rotation_angle_signs),
+            "error": f"replay failed: {type(exc).__name__}: {exc}",
+        }
 
     return {
         **trajectory,
