@@ -367,7 +367,9 @@ t_pauli +ZIIZ;""",
 
     assert summary["candidates_emitted"] == 1
     assert summary["candidate_equivalent"] == 1
-    candidate = json.loads((tmp_path / "out" / "candidate_replacements.jsonl").read_text())
+    candidate = json.loads(
+        (tmp_path / "out" / "candidate_replacements.jsonl").read_text()
+    )
     assert candidate["equivalent"] is True
     assert candidate["selection"] == "ranked-window"
     assert candidate["window"]["source_ids"] == ["line2", "line3", "line4", "line5"]
@@ -430,6 +432,70 @@ t_pauli +ZIIZ;""",
     record = json.loads((tmp_path / "out" / "results.jsonl").read_text())
     assert record["result"]["k_terminal_prefix_length"] == 5
     assert record["window"]["source_ids"] == ["line2", "line3", "line4", "line5"]
+
+
+def test_benchmark_pbc_files_categorizes_solver_nan_results(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from benchmark_ai_pauli_network_synthesis import benchmark_pbc_files
+
+    pbc = tmp_path / "toy_pbc_post_opt.txt"
+    pbc.write_text(
+        """qreg q[4];
+t_pauli +ZZII;
+t_pauli +IZZI;
+t_pauli -IIZZ;
+t_pauli +ZIIZ;
+t_pauli +ZZZZ;""",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_analyze(window, **kwargs):
+        calls.append(window.source_ids)
+        if len(calls) == 1:
+            return {
+                "status": "ok",
+                "full_trajectory_length": 12,
+                "k_terminal_prefix_length": 4,
+                "emissions_before_prefix": 1,
+                "solver_output_excerpt": "Failed to create WeightedIndex: NaN",
+                "error": "",
+            }
+        return {
+            "status": "failed",
+            "solver_output_excerpt": "The problematic probs were: [NaN]",
+            "error": "AI Pauli solver returned no trajectory",
+        }
+
+    monkeypatch.setattr(
+        "benchmark_ai_pauli_network_synthesis.analyze_ai_pauli_window_trajectory",
+        fake_analyze,
+    )
+
+    summary = benchmark_pbc_files(
+        paths=[pbc],
+        out_dir=tmp_path / "out",
+        max_windows_per_file=2,
+        max_files=None,
+        window_terms=4,
+        max_threads=1,
+        include_qasm=False,
+        trajectory_k="floor-half",
+    )
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "out" / "results.jsonl").read_text().splitlines()
+    ]
+
+    assert summary["result_categories"] == {
+        "failed_solver_nan": 1,
+        "ok_with_solver_nan": 1,
+    }
+    assert records[0]["result"]["result_category"] == "ok_with_solver_nan"
+    assert records[1]["result"]["result_category"] == "failed_solver_nan"
 
 
 def test_benchmark_pbc_files_records_failed_window_and_continues(

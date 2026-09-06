@@ -65,6 +65,7 @@ def benchmark_pbc_files(
         "trajectory_prefix_length_total": 0,
         "trajectory_full_length_total": 0,
         "trajectory_emissions_before_prefix_total": 0,
+        "result_categories": {},
         "seconds": 0.0,
     }
 
@@ -201,6 +202,7 @@ def _write_result(
         result = {key: value for key, value in result.items()}
         result.pop("optimized_qasm", None)
         result.pop("pass_output", None)
+    result.setdefault("result_category", _result_category(result))
     record: dict[str, Any] = {"selection": selection, "result": result}
     if window is not None:
         record["window"] = window
@@ -261,6 +263,9 @@ def _update_summary(
     kind: str,
 ) -> None:
     status = result["status"]
+    result_category = result.setdefault("result_category", _result_category(result))
+    categories = summary["result_categories"]
+    categories[result_category] = categories.get(result_category, 0) + 1
     if kind == "window":
         summary["windows_run"] += 1
     elif kind == "region":
@@ -296,9 +301,7 @@ def _update_trajectory_summary(
         return
     if "k_terminal_prefix_length" not in result:
         return
-    summary["trajectory_prefix_length_total"] += int(
-        result["k_terminal_prefix_length"]
-    )
+    summary["trajectory_prefix_length_total"] += int(result["k_terminal_prefix_length"])
     summary["trajectory_full_length_total"] += int(result["full_trajectory_length"])
     summary["trajectory_emissions_before_prefix_total"] += int(
         result["emissions_before_prefix"]
@@ -315,9 +318,17 @@ def _resolve_trajectory_k(value: int | str | None, num_qubits: int) -> int:
     try:
         return int(value)
     except ValueError as exc:
-        raise ValueError(
-            "trajectory_k must be an integer or 'floor-half'"
-        ) from exc
+        raise ValueError("trajectory_k must be an integer or 'floor-half'") from exc
+
+
+def _result_category(result: dict[str, Any]) -> str:
+    status = str(result.get("status", "unknown"))
+    has_solver_nan = "nan" in str(result.get("solver_output_excerpt", "")).lower()
+    if status == "ok":
+        return "ok_with_solver_nan" if has_solver_nan else "ok_clean"
+    if status == "failed" and has_solver_nan:
+        return "failed_solver_nan"
+    return status
 
 
 def _metric_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, int]:

@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ftcircuitbench.semi_pbc.ai_pauli_network import (
+    PauliNetworkWindow,
+    analyze_ai_pauli_window_trajectory,
+    build_ai_trajectory_prefix_ops,
+)
 from ftcircuitbench.semi_pbc.ir import SemiPBCHeader, SemiPBCOp, validate_program
 from ftcircuitbench.semi_pbc.lowering import (
     lower_pauli_measurement,
@@ -64,6 +69,7 @@ def compile_pbc_text(
     )
     ops, provenance = _lower_source_ops(
         source_ops,
+        data_qubits=program.data_qubits,
         k=k,
         ancilla_budget=ancilla_budget,
         optimization=optimization,
@@ -108,9 +114,15 @@ def _validate_options(
         raise ValueError("measurement_reducer must be 'none' or 'peres-galvao-greedy'")
     if greedy_order not in {0, 1, 2}:
         raise ValueError("greedy_order must be 0, 1, or 2")
-    if optimization not in {"none", "local-window", "rotation-dp"}:
+    if optimization not in {
+        "none",
+        "local-window",
+        "rotation-dp",
+        "ai-trajectory-prefix",
+    }:
         raise ValueError(
-            "optimization must be 'none', 'local-window', or 'rotation-dp'"
+            "optimization must be 'none', 'local-window', 'rotation-dp', "
+            "or 'ai-trajectory-prefix'"
         )
     if rotation_lowering != "parity-network":
         raise ValueError("rotation_lowering must be 'parity-network'")
@@ -145,6 +157,7 @@ def _reduce_source_ops(
 def _lower_source_ops(
     source_ops: Iterable[ReducedSourceOp],
     *,
+    data_qubits: int,
     k: int,
     ancilla_budget: int | None,
     optimization: str,
@@ -158,6 +171,27 @@ def _lower_source_ops(
 
     index = 0
     while index < len(source_ops):
+        ai_prefix = _try_ai_trajectory_prefix_window(
+            source_ops,
+            index=index,
+            data_qubits=data_qubits,
+            start_id=next_id,
+            k=k,
+            optimization=optimization,
+        )
+        if ai_prefix is not None:
+            optimized_ops, source_ops_by_output_id, run_end = ai_prefix
+            ops.extend(optimized_ops)
+            provenance.extend(
+                _provenance_records_from_mapping(
+                    optimized_ops,
+                    source_ops_by_output_id,
+                )
+            )
+            next_id = optimized_ops[-1].id + 1
+            index = run_end
+            continue
+
         run_end = _rotation_dp_run_end(source_ops, index, k, optimization)
         if run_end is not None:
             run = source_ops[index:run_end]
@@ -230,12 +264,13 @@ def _lower_source_ops(
         next_id = lowered[-1].id + 1
         index += 1
 
-    if optimization in {"local-window", "rotation-dp"}:
+    if optimization in {"local-window", "rotation-dp", "ai-trajectory-prefix"}:
         ops = cancel_adjacent_inverse_cliffords(ops)
         provenance = _filter_provenance(provenance, ops)
     if optimization == "rotation-dp":
         fallback_ops, fallback_provenance = _lower_source_ops(
             source_ops,
+            data_qubits=data_qubits,
             k=k,
             ancilla_budget=ancilla_budget,
             optimization="local-window",
@@ -264,6 +299,129 @@ def _rotation_dp_run_end(
     return run_end if run_end - index > 1 else None
 
 
+def _try_ai_trajectory_prefix_window(
+    source_ops: tuple[ReducedSourceOp, ...],
+    *,
+    index: int,
+    data_qubits: int,
+    start_id: int,
+    k: int,
+    optimization: str,
+) -> tuple[list[SemiPBCOp], dict[int, ReducedSourceOp], int] | None:
+    if optimization != "ai-trajectory-prefix":
+        return None
+    window_terms = 4
+    run_end = index + window_terms
+    chunk = source_ops[index:run_end]
+    if len(chunk) != window_terms:
+        return None
+    if any(source_op.op != "t_pauli" for source_op in chunk):
+        return None
+    if not any(source_op.term.weight > k for source_op in chunk):
+        return None
+
+    window = _ai_window_from_source_ops(
+        chunk,
+        data_qubits=data_qubits,
+        index=index,
+    )
+    if window is None:
+        return None
+    try:
+        analysis = analyze_ai_pauli_window_trajectory(
+            window,
+            k=k,
+            deterministic=True,
+        )
+        if not _is_usable_ai_prefix_analysis(analysis):
+            return None
+        prefix_ops = build_ai_trajectory_prefix_ops(
+            start_id=start_id,
+            trajectory=analysis,
+            k=k,
+            original_qubits=window.original_qubits,
+            source_ids=window.source_ids,
+        )
+    except Exception:  # noqa: BLE001 - optional AI path falls back on any failure.
+        return None
+
+    source_ops_by_output_id = {
+        output_id: chunk[source_index]
+        for output_id, source_index in prefix_ops.source_indices_by_output_id.items()
+    }
+    return prefix_ops.ops, source_ops_by_output_id, run_end
+
+
+def _ai_window_from_source_ops(
+    source_ops: tuple[ReducedSourceOp, ...],
+    *,
+    data_qubits: int,
+    index: int,
+) -> PauliNetworkWindow | None:
+    original_qubits = tuple(
+        sorted(
+            {
+                int(qubit[1:])
+                for op in source_ops
+                for qubit, _pauli in op.term.pairs
+                if qubit.startswith("q")
+            }
+        )
+    )
+    coupling_map = _line_coupling_map_for_ai_window(len(original_qubits))
+    if coupling_map is None:
+        return None
+    reindex = {qubit: local for local, qubit in enumerate(original_qubits)}
+    return PauliNetworkWindow(
+        source_path="<compile_pbc_text>",
+        start_op_id=source_ops[0].id,
+        stop_op_id=source_ops[-1].id,
+        source_ids=tuple(op.source_id for op in source_ops),
+        original_qubits=original_qubits,
+        num_qubits=len(original_qubits),
+        signed_paulis=tuple(
+            _compress_source_pauli(op.term.to_full_width(data_qubits), reindex)
+            for op in source_ops
+        ),
+        total_pauli_weight=sum(op.term.weight for op in source_ops),
+        multi_qubit_terms=sum(op.term.weight > 1 for op in source_ops),
+        topology="line",
+        coupling_map=tuple(coupling_map),
+    )
+
+
+def _line_coupling_map_for_ai_window(
+    num_qubits: int,
+) -> tuple[tuple[int, int], ...] | None:
+    if num_qubits not in {4, 5, 6}:
+        return None
+    return tuple((qubit, qubit + 1) for qubit in range(num_qubits - 1))
+
+
+def _compress_source_pauli(signed_pauli: str, reindex: dict[int, int]) -> str:
+    compressed = ["I"] * len(reindex)
+    for original_index, compressed_index in reindex.items():
+        compressed[compressed_index] = signed_pauli[original_index + 1]
+    return signed_pauli[0] + "".join(compressed)
+
+
+def _is_usable_ai_prefix_analysis(result: dict[str, Any]) -> bool:
+    if result.get("status") != "ok":
+        return False
+    if "nan" in str(result.get("solver_output_excerpt", "")).lower():
+        return False
+    return all(
+        key in result
+        for key in (
+            "decoded_solution",
+            "gateset",
+            "replay_terms",
+            "rotation_angle_signs",
+            "k_terminal_prefix_length",
+        )
+    )
+
+
 def _is_high_weight_rotation(source_op: ReducedSourceOp, k: int) -> bool:
     return source_op.op == "t_pauli" and source_op.term.weight > k
 
@@ -276,7 +434,10 @@ def _retained_qubits_for_source_op(
     optimization: str,
 ) -> tuple[str, ...] | None:
     source_op = source_ops[index]
-    if optimization not in {"local-window", "rotation-dp"} or source_op.term.weight <= k:
+    if (
+        optimization not in {"local-window", "rotation-dp", "ai-trajectory-prefix"}
+        or source_op.term.weight <= k
+    ):
         return None
     block = choose_retained_block(
         source_op.term,
@@ -372,7 +533,9 @@ def _provenance_records_from_mapping(
 ) -> list[dict[str, Any]]:
     source_output_counts: dict[int, int] = {}
     for source_op in source_ops_by_output_id.values():
-        source_output_counts[source_op.id] = source_output_counts.get(source_op.id, 0) + 1
+        source_output_counts[source_op.id] = (
+            source_output_counts.get(source_op.id, 0) + 1
+        )
     return [
         _provenance_record(
             source_ops_by_output_id[op.id],

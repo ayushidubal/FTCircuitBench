@@ -257,10 +257,9 @@ def test_compile_rotation_dp_unitary_matches_source():
         optimization="rotation-dp",
     )
 
-    original = (
-        pauli_rotation_matrix(second_term, data_qubits=4)
-        @ pauli_rotation_matrix(first_term, data_qubits=4)
-    )
+    original = pauli_rotation_matrix(
+        second_term, data_qubits=4
+    ) @ pauli_rotation_matrix(first_term, data_qubits=4)
     compiled = semi_pbc_unitary(result.ops, data_qubits=4)
     assert_allclose_up_to_global_phase(compiled, original)
 
@@ -278,6 +277,139 @@ def test_compile_rotation_dp_sidecar_matches_output_ops():
 
     assert sidecar_ids == op_ids
     assert result.sidecar["optimization"] == "rotation-dp"
+
+
+def test_compile_ai_trajectory_prefix_emits_shared_frame(monkeypatch):
+    text = (
+        "qreg q[4];\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\n"
+    )
+    analyze_calls = []
+
+    def fake_analyze(window, **kwargs):
+        analyze_calls.append(kwargs)
+        assert window.num_qubits == 4
+        assert window.signed_paulis == ("+ZZZZ", "+ZZZZ", "+ZZZZ", "+ZZZZ")
+        assert kwargs["k"] == 2
+        return {
+            "status": "ok",
+            "raw_actions": [0, 1],
+            "decoded_solution": [("gate", 0, 0, 0), ("gate", 1, 0, 0)],
+            "gateset": [("cx", (0, 2)), ("cx", (0, 3))],
+            "num_qubits": 4,
+            "replay_terms": ["+ZZZZ", "+ZZZZ", "+ZZZZ", "+ZZZZ"],
+            "rotation_angle_signs": [1, 1, 1, 1],
+            "k_terminal_prefix_length": 2,
+            "pending_terms": ["+ZZII", "+ZZII", "+ZZII", "+ZZII"],
+            "pending_weights": [2, 2, 2, 2],
+            "pending_rotation_indices": [0, 1, 2, 3],
+            "prefix_emissions": [],
+            "solver_output_excerpt": "",
+            "error": "",
+        }
+
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.pipeline.analyze_ai_pauli_window_trajectory",
+        fake_analyze,
+    )
+
+    result = compile_pbc_text(
+        text,
+        k=2,
+        measurement_reducer="none",
+        optimization="ai-trajectory-prefix",
+    )
+
+    assert result.summary["optimization"] == "ai-trajectory-prefix"
+    assert result.summary["max_output_weight"] == 2
+    assert [op.op for op in result.ops] == [
+        "cx",
+        "cx",
+        "t_pauli",
+        "t_pauli",
+        "t_pauli",
+        "t_pauli",
+        "cx",
+        "cx",
+    ]
+    assert result.ops[0].qubits == ("q2", "q0")
+    assert result.ops[1].qubits == ("q3", "q0")
+    assert [op.term.to_full_width(4) for op in result.ops if op.op == "t_pauli"] == [
+        "+ZZII",
+        "+ZZII",
+        "+ZZII",
+        "+ZZII",
+    ]
+    assert analyze_calls[0]["deterministic"] is True
+
+
+def test_compile_ai_trajectory_prefix_unitary_matches_source(monkeypatch):
+    text = (
+        "qreg q[4];\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\n"
+    )
+
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.pipeline.analyze_ai_pauli_window_trajectory",
+        lambda window, **kwargs: {
+            "status": "ok",
+            "raw_actions": [0, 1],
+            "decoded_solution": [("gate", 0, 0, 0), ("gate", 1, 0, 0)],
+            "gateset": [("cx", (0, 2)), ("cx", (0, 3))],
+            "num_qubits": 4,
+            "replay_terms": ["+ZZZZ", "+ZZZZ", "+ZZZZ", "+ZZZZ"],
+            "rotation_angle_signs": [1, 1, 1, 1],
+            "k_terminal_prefix_length": 2,
+            "pending_terms": ["+ZZII", "+ZZII", "+ZZII", "+ZZII"],
+            "pending_weights": [2, 2, 2, 2],
+            "pending_rotation_indices": [0, 1, 2, 3],
+            "prefix_emissions": [],
+            "solver_output_excerpt": "",
+            "error": "",
+        },
+    )
+
+    result = compile_pbc_text(
+        text,
+        k=2,
+        measurement_reducer="none",
+        optimization="ai-trajectory-prefix",
+    )
+
+    term = PauliTerm.from_full_width("+ZZZZ")
+    original = np.linalg.matrix_power(pauli_rotation_matrix(term, data_qubits=4), 4)
+    compiled = semi_pbc_unitary(result.ops, data_qubits=4)
+    assert_allclose_up_to_global_phase(compiled, original)
+
+
+def test_compile_ai_trajectory_prefix_falls_back_when_solver_fails(monkeypatch):
+    text = (
+        "qreg q[4];\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\nt_pauli +ZZZZ;\n"
+    )
+    monkeypatch.setattr(
+        "ftcircuitbench.semi_pbc.pipeline.analyze_ai_pauli_window_trajectory",
+        lambda window, **kwargs: {
+            "status": "failed",
+            "error": "AI Pauli solver returned no trajectory",
+            "solver_output_excerpt": "NaN",
+        },
+    )
+
+    fallback = compile_pbc_text(
+        text,
+        k=2,
+        measurement_reducer="none",
+        optimization="local-window",
+    )
+    result = compile_pbc_text(
+        text,
+        k=2,
+        measurement_reducer="none",
+        optimization="ai-trajectory-prefix",
+    )
+
+    assert [op.to_record() for op in result.ops] == [
+        op.to_record() for op in fallback.ops
+    ]
+    assert result.summary["optimization"] == "ai-trajectory-prefix"
 
 
 def test_compile_rotation_dp_does_not_regress_local_window_at_run_boundaries():

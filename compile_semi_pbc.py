@@ -20,7 +20,9 @@ def main() -> int:
     parser.add_argument("--emit-sidecar", dest="emit_sidecar", action="store_true")
     parser.set_defaults(emit_sidecar=True)
     parser.add_argument("--k", required=True, type=_positive_int)
-    parser.add_argument("--objective", default="latency-depth", choices=("latency-depth",))
+    parser.add_argument(
+        "--objective", default="latency-depth", choices=("latency-depth",)
+    )
     parser.add_argument(
         "--measurement-reducer",
         default="peres-galvao-greedy",
@@ -30,7 +32,7 @@ def main() -> int:
     parser.add_argument(
         "--optimization",
         default="none",
-        choices=("none", "local-window", "rotation-dp"),
+        choices=("none", "local-window", "rotation-dp", "ai-trajectory-prefix"),
     )
     parser.add_argument(
         "--rotation-lowering",

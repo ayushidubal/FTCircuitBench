@@ -22,6 +22,8 @@ from qiskit.exceptions import QiskitError
 from qiskit.quantum_info import Clifford, Operator, Pauli
 from qiskit.transpiler import PassManager
 
+from ftcircuitbench.semi_pbc.ir import SemiPBCOp
+from ftcircuitbench.semi_pbc.pauli import PauliTerm
 from ftcircuitbench.semi_pbc.pbc_input import PBCProgram
 
 _TWO_QUBIT_OPS = {"cx", "cz", "ecr", "swap", "iswap", "rxx", "ryy", "rzz"}
@@ -81,12 +83,19 @@ class PauliReplaySnapshot:
     prefix_length: int
     pending_terms: tuple[str, ...]
     pending_weights: tuple[int, ...]
+    pending_indices: tuple[int, ...]
 
 
 @dataclass(frozen=True)
 class PauliReplayResult:
     snapshots: tuple[PauliReplaySnapshot, ...]
     emissions: tuple[PauliReplayEmission, ...]
+
+
+@dataclass(frozen=True)
+class AITrajectoryPrefixOps:
+    ops: list[SemiPBCOp]
+    source_indices_by_output_id: dict[int, int]
 
 
 def ai_pauli_network_dependency_status() -> dict[str, Any]:
@@ -130,9 +139,7 @@ def decode_ai_pauli_solution(
             qubit = (value >> 11) & 0x3FF
             rotation_index = (value >> 1) & 0x3FF
             phase_mult = 1 if value & 1 else -1
-            decoded.append(
-                (axis_names[axis_code], qubit, rotation_index, phase_mult)
-            )
+            decoded.append((axis_names[axis_code], qubit, rotation_index, phase_mult))
         else:
             decoded.append(("gate", int(value), 0, 0))
     return decoded
@@ -389,7 +396,9 @@ def extract_ai_pauli_trajectory(
     replay_terms = None
     rotation_angle_signs = None
     try:
-        selected_qargs = list(range(circuit.num_qubits)) if qargs is None else list(qargs)
+        selected_qargs = (
+            list(range(circuit.num_qubits)) if qargs is None else list(qargs)
+        )
         model_repo = _load_ai_pauli_model_repository()
         record, subgraph_perm = _select_ai_pauli_model_record(
             model_repo,
@@ -443,9 +452,7 @@ def extract_ai_pauli_trajectory(
             "num_qubits": circuit.num_qubits,
             "replay_terms": list(replay_terms) if replay_terms is not None else None,
             "rotation_angle_signs": (
-                list(rotation_angle_signs)
-                if rotation_angle_signs is not None
-                else None
+                list(rotation_angle_signs) if rotation_angle_signs is not None else None
             ),
             "solver_output_lines": 0,
             "solver_output_excerpt": "",
@@ -527,10 +534,165 @@ def analyze_ai_pauli_window_trajectory(
         "k_terminal_prefix_length": terminal.prefix_length,
         "pending_terms": list(terminal.pending_terms),
         "pending_weights": list(terminal.pending_weights),
+        "pending_rotation_indices": list(terminal.pending_indices),
+        "prefix_emissions": [
+            {
+                "prefix_length": emission.prefix_length,
+                "op": emission.op,
+                "qubit": emission.qubit,
+                "rotation_index": emission.rotation_index,
+                "phase_mult": emission.phase_mult,
+                "emitted_pauli": emission.emitted_pauli,
+            }
+            for emission in replay.emissions
+            if emission.prefix_length <= terminal.prefix_length
+        ],
         "rotation_angle_signs": list(rotation_angle_signs),
         "emissions_before_prefix": emissions_before_prefix,
         "total_emissions": len(replay.emissions),
     }
+
+
+def build_ai_trajectory_prefix_ops(
+    *,
+    start_id: int,
+    trajectory: dict[str, Any],
+    k: int,
+    original_qubits: Sequence[int] | None = None,
+    source_ids: Sequence[str] | None = None,
+) -> AITrajectoryPrefixOps:
+    if trajectory.get("status") != "ok":
+        raise ValueError("AI trajectory result is not ok")
+    if type(start_id) is not int or start_id < 0:
+        raise ValueError("start_id must be a non-negative integer")
+    if type(k) is not int or k < 1:
+        raise ValueError("k must be an integer >= 1")
+
+    num_qubits = int(trajectory["num_qubits"])
+    original_qubits = (
+        tuple(range(num_qubits))
+        if original_qubits is None
+        else tuple(int(qubit) for qubit in original_qubits)
+    )
+    if len(original_qubits) != num_qubits:
+        raise ValueError("original_qubits must match the trajectory width")
+
+    replay_terms = tuple(str(term) for term in trajectory["replay_terms"])
+    rotation_angle_signs = tuple(
+        int(sign) for sign in trajectory["rotation_angle_signs"]
+    )
+    source_ids = (
+        tuple(f"ai_rotation_{index}" for index in range(len(replay_terms)))
+        if source_ids is None
+        else tuple(str(source_id) for source_id in source_ids)
+    )
+    if len(rotation_angle_signs) != len(replay_terms):
+        raise ValueError("rotation_angle_signs must match replay_terms")
+    if len(source_ids) != len(replay_terms):
+        raise ValueError("source_ids must match replay_terms")
+
+    replay = replay_ai_pauli_solution(
+        num_qubits=num_qubits,
+        signed_paulis=replay_terms,
+        gateset=trajectory["gateset"],
+        solution=trajectory["decoded_solution"],
+    )
+    prefix_length = int(trajectory["k_terminal_prefix_length"])
+    terminal = next(
+        (
+            snapshot
+            for snapshot in replay.snapshots
+            if snapshot.prefix_length == prefix_length
+        ),
+        None,
+    )
+    if terminal is None:
+        raise ValueError(f"trajectory has no prefix length {prefix_length}")
+    if any(weight > k for weight in terminal.pending_weights):
+        raise ValueError("trajectory prefix does not satisfy k cap")
+
+    emission_by_prefix = {
+        emission.prefix_length: emission
+        for emission in replay.emissions
+        if emission.prefix_length <= prefix_length
+    }
+    ops: list[SemiPBCOp] = []
+    source_indices_by_output_id: dict[int, int] = {}
+    prefix_cliffords: list[SemiPBCOp] = []
+    next_id = start_id
+
+    decoded_solution = _normalise_ai_pauli_solution(trajectory["decoded_solution"])
+    gateset = _normalise_gateset(trajectory["gateset"])
+    shared_source = "+".join(source_ids)
+    for step_index, (op, arg1, _arg2, _arg3) in enumerate(
+        decoded_solution[:prefix_length],
+        start=1,
+    ):
+        if op == "gate":
+            clifford = _semi_pbc_clifford_for_ai_gate(
+                next_id,
+                gateset[arg1],
+                original_qubits=original_qubits,
+                source_id=shared_source,
+            )
+            ops.append(clifford)
+            prefix_cliffords.append(clifford)
+            source_indices_by_output_id[next_id] = 0
+            next_id += 1
+            continue
+        if op in {"rx", "ry", "rz"}:
+            emission = emission_by_prefix[step_index]
+            source_index = emission.rotation_index
+            term = _semi_pbc_term_from_signed_pauli(
+                emission.emitted_pauli,
+                original_qubits=original_qubits,
+                sign_multiplier=rotation_angle_signs[source_index],
+                source_id=source_ids[source_index],
+            )
+            if term.weight > k:
+                raise ValueError("emitted Pauli term exceeds k cap")
+            ops.append(
+                SemiPBCOp.pauli_rotation(
+                    next_id,
+                    term,
+                    source_id=source_ids[source_index],
+                )
+            )
+            source_indices_by_output_id[next_id] = source_index
+            next_id += 1
+            continue
+        raise ValueError(f"unsupported trajectory op {op!r}")
+
+    for source_index, pending_term in zip(
+        terminal.pending_indices,
+        terminal.pending_terms,
+        strict=True,
+    ):
+        term = _semi_pbc_term_from_signed_pauli(
+            pending_term,
+            original_qubits=original_qubits,
+            sign_multiplier=rotation_angle_signs[source_index],
+            source_id=source_ids[source_index],
+        )
+        if term.weight > k:
+            raise ValueError("pending Pauli term exceeds k cap")
+        ops.append(
+            SemiPBCOp.pauli_rotation(
+                next_id,
+                term,
+                source_id=source_ids[source_index],
+            )
+        )
+        source_indices_by_output_id[next_id] = source_index
+        next_id += 1
+
+    for clifford in reversed(prefix_cliffords):
+        inverse = _inverse_semi_pbc_clifford(next_id, clifford)
+        ops.append(inverse)
+        source_indices_by_output_id[next_id] = source_indices_by_output_id[clifford.id]
+        next_id += 1
+
+    return AITrajectoryPrefixOps(ops, source_indices_by_output_id)
 
 
 def extract_rotation_regions(
@@ -770,13 +932,14 @@ def _pauli_replay_snapshot(
     pending: Sequence[str],
     emitted: set[int],
 ) -> PauliReplaySnapshot:
-    pending_terms = tuple(
-        pauli for index, pauli in enumerate(pending) if index not in emitted
+    pending_pairs = tuple(
+        (index, pauli) for index, pauli in enumerate(pending) if index not in emitted
     )
     return PauliReplaySnapshot(
         prefix_length=prefix_length,
-        pending_terms=pending_terms,
-        pending_weights=tuple(_pauli_weight(pauli) for pauli in pending_terms),
+        pending_terms=tuple(pauli for _index, pauli in pending_pairs),
+        pending_weights=tuple(_pauli_weight(pauli) for _index, pauli in pending_pairs),
+        pending_indices=tuple(index for index, _pauli in pending_pairs),
     )
 
 
@@ -908,7 +1071,9 @@ def _parse_ai_pauli_circuit_rotations(
         try:
             clifford = clifford.compose(instruction.operation, qubits)
         except QiskitError as exc:
-            raise TypeError(f"Gate {gate_name} on qubits {qubits} not supported.") from exc
+            raise TypeError(
+                f"Gate {gate_name} on qubits {qubits} not supported."
+            ) from exc
 
     return tuple(rotations), tuple(angle_signs)
 
@@ -924,11 +1089,60 @@ def _solver_output_fields(output: str) -> dict[str, Any]:
     }
 
 
-def _normalise_gateset(gateset: Sequence[Sequence[Any]]) -> list[tuple[str, tuple[int, ...]]]:
+def _normalise_gateset(
+    gateset: Sequence[Sequence[Any]],
+) -> list[tuple[str, tuple[int, ...]]]:
     return [
         (str(gate_name).lower(), tuple(int(qubit) for qubit in qubits))
         for gate_name, qubits in gateset
     ]
+
+
+def _semi_pbc_clifford_for_ai_gate(
+    id: int,
+    gate: tuple[str, Sequence[int]],
+    *,
+    original_qubits: Sequence[int],
+    source_id: str,
+) -> SemiPBCOp:
+    gate_name, raw_args = gate
+    method_name = gate_name.lower()
+    args = tuple(int(arg) for arg in raw_args)
+    if method_name == "cx":
+        args = args[::-1]
+    if method_name not in {"h", "s", "sdg", "cx"}:
+        raise ValueError(f"unsupported semi-PBC Clifford gate {gate_name!r}")
+    try:
+        qubits = tuple(f"q{original_qubits[arg]}" for arg in args)
+    except IndexError as exc:
+        raise ValueError(f"gate {gate_name} uses qubits outside local window") from exc
+    return SemiPBCOp.clifford(id, method_name, qubits, source_id=source_id)
+
+
+def _inverse_semi_pbc_clifford(id: int, op: SemiPBCOp) -> SemiPBCOp:
+    inverse_op = {"h": "h", "s": "sdg", "sdg": "s", "cx": "cx"}[op.op]
+    return SemiPBCOp.clifford(id, inverse_op, op.qubits, source_id=op.source_id)
+
+
+def _semi_pbc_term_from_signed_pauli(
+    signed_pauli: str,
+    *,
+    original_qubits: Sequence[int],
+    sign_multiplier: int,
+    source_id: str,
+) -> PauliTerm:
+    if sign_multiplier not in {-1, 1}:
+        raise ValueError("sign_multiplier must be -1 or 1")
+    sign, pauli = _parse_signed_pauli(signed_pauli, len(original_qubits))
+    return PauliTerm.from_pairs(
+        (
+            (f"q{original_qubits[index]}", label)
+            for index, label in enumerate(pauli)
+            if label != "I"
+        ),
+        sign=sign * sign_multiplier,
+        source_id=source_id,
+    )
 
 
 def _package_version(package: str) -> str:
