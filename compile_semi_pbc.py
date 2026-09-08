@@ -18,7 +18,7 @@ def main() -> int:
     parser.add_argument("--summary", type=Path)
     parser.add_argument("--sidecar", type=Path)
     parser.add_argument("--emit-sidecar", dest="emit_sidecar", action="store_true")
-    parser.set_defaults(emit_sidecar=True)
+    parser.set_defaults(emit_sidecar=False)
     parser.add_argument("--k", required=True, type=_positive_int)
     parser.add_argument(
         "--objective", default="latency-depth", choices=("latency-depth",)

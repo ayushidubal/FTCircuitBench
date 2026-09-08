@@ -39,7 +39,7 @@ def test_compile_semi_pbc_cli_writes_jsonl_and_summary(tmp_path):
     assert "max_output_weight=1" in proc.stdout
 
 
-def test_compile_semi_pbc_cli_emits_default_sidecar(tmp_path):
+def test_compile_semi_pbc_cli_does_not_emit_default_sidecar(tmp_path):
     pbc = tmp_path / "toy.pbc"
     out = tmp_path / "toy.semi_pbc.jsonl"
     pbc.write_text("qreg q[1];\nt_pauli +Z;\n")
@@ -54,6 +54,32 @@ def test_compile_semi_pbc_cli_emits_default_sidecar(tmp_path):
             str(out),
             "--k",
             "1",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    sidecar = out.with_suffix(f"{out.suffix}.sidecar.json")
+    assert not sidecar.exists()
+
+
+def test_compile_semi_pbc_cli_emits_default_sidecar_when_requested(tmp_path):
+    pbc = tmp_path / "toy.pbc"
+    out = tmp_path / "toy.semi_pbc.jsonl"
+    pbc.write_text("qreg q[1];\nt_pauli +Z;\n")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "compile_semi_pbc.py",
+            "--pbc",
+            str(pbc),
+            "--out",
+            str(out),
+            "--k",
+            "1",
+            "--emit-sidecar",
         ],
         check=True,
         text=True,
