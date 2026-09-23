@@ -1,0 +1,639 @@
+# ruff: noqa: TRY004
+
+from __future__ import annotations
+
+import json
+import re
+import tempfile
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from ftcircuitbench.semi_pbc.pauli import PauliTerm
+
+_INDEXED_SUFFIX = r"(?:0|[1-9][0-9]*)"
+_DATA_QUBIT_RE = re.compile(rf"q({_INDEXED_SUFFIX})\Z")
+_PHYSICAL_CLASSICAL_RE = re.compile(rf"c({_INDEXED_SUFFIX})\Z")
+_SOURCE_CLASSICAL_RE = re.compile(rf"src({_INDEXED_SUFFIX})\Z")
+_CLIFFORD_OPS = {"h", "s", "sdg", "cx"}
+_HEADER_FIELDS = {"format", "version", "k", "data_qubits"}
+_OP_FIELDS = {
+    "h": {"id", "op", "qubits", "source_id"},
+    "s": {"id", "op", "qubits", "source_id"},
+    "sdg": {"id", "op", "qubits", "source_id"},
+    "cx": {"id", "op", "qubits", "source_id"},
+    "t_pauli": {
+        "id",
+        "op",
+        "terms",
+        "sign",
+        "angle_num",
+        "angle_den",
+        "source_id",
+    },
+    "m_pauli": {"id", "op", "terms", "sign", "result", "source_id"},
+    "xor": {"id", "op", "target", "terms", "const", "source_id"},
+}
+_OP_RUNTIME_FIELDS = {
+    "h": {"qubits"},
+    "s": {"qubits"},
+    "sdg": {"qubits"},
+    "cx": {"qubits"},
+    "t_pauli": {"term", "angle_num", "angle_den"},
+    "m_pauli": {"term", "result"},
+    "xor": {"target", "terms", "const"},
+}
+_RUNTIME_FIELD_DEFAULTS = {
+    "qubits": (),
+    "term": None,
+    "result": None,
+    "target": None,
+    "terms": (),
+    "const": 0,
+    "angle_num": None,
+    "angle_den": None,
+}
+
+
+@dataclass(frozen=True)
+class KPBCHeader:
+    k: int
+    data_qubits: int
+    format: str = "k-pbc"
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        if type(self.k) is not int or self.k < 1:
+            raise ValueError("k must be an integer >= 1")
+        if type(self.data_qubits) is not int or self.data_qubits < 0:
+            raise ValueError("data_qubits must be a non-negative integer")
+        if not isinstance(self.format, str) or self.format != "k-pbc":
+            raise ValueError(f"unsupported k-PBC format {self.format!r}")
+        if type(self.version) is not int or self.version != 1:
+            raise ValueError(f"unsupported k-PBC version {self.version!r}")
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "format": self.format,
+            "version": self.version,
+            "k": self.k,
+            "data_qubits": self.data_qubits,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> KPBCHeader:
+        _reject_unknown_fields(record, "header", _HEADER_FIELDS)
+        return cls(
+            k=_required_int(record, "k"),
+            data_qubits=_required_int(record, "data_qubits"),
+            format=_required_str(record, "format"),
+            version=_required_int(record, "version"),
+        )
+
+    def validate_ops(self, ops: Iterable[KPBCOp]) -> None:
+        validate_kpbc_program(self, ops)
+
+
+@dataclass(frozen=True)
+class KPBCOp:
+    id: int
+    op: str
+    qubits: tuple[str, ...] = ()
+    term: PauliTerm | None = None
+    result: str | None = None
+    target: str | None = None
+    terms: tuple[str, ...] = ()
+    const: int = 0
+    angle_num: int | None = None
+    angle_den: int | None = None
+    source_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if _is_schema_str_sequence(self.qubits):
+            object.__setattr__(self, "qubits", tuple(self.qubits))
+        if _is_schema_str_sequence(self.terms):
+            object.__setattr__(self, "terms", tuple(self.terms))
+
+    @classmethod
+    def clifford(
+        cls, id: int, op: str, qubits: Iterable[str], source_id: str | None = None
+    ) -> KPBCOp:
+        return cls(
+            id=id,
+            op=op,
+            qubits=_validate_schema_str_sequence(qubits, "qubits", "qubit"),
+            source_id=source_id,
+        )
+
+    @classmethod
+    def t_pauli(
+        cls, id: int, term: PauliTerm, source_id: str | None = None
+    ) -> KPBCOp:
+        return cls(
+            id=id,
+            op="t_pauli",
+            term=term,
+            angle_num=1,
+            angle_den=8,
+            source_id=source_id,
+        )
+
+    @classmethod
+    def m_pauli(
+        cls,
+        id: int,
+        term: PauliTerm,
+        result: str,
+        source_id: str | None = None,
+    ) -> KPBCOp:
+        return cls(
+            id=id,
+            op="m_pauli",
+            term=term,
+            result=result,
+            source_id=source_id,
+        )
+
+    @classmethod
+    def xor(
+        cls,
+        id: int,
+        target: str,
+        terms: Iterable[str],
+        const: int = 0,
+        source_id: str | None = None,
+    ) -> KPBCOp:
+        return cls(
+            id=id,
+            op="xor",
+            target=target,
+            terms=_validate_schema_str_sequence(terms, "terms", "xor term"),
+            const=const,
+            source_id=source_id,
+        )
+
+    def to_record(self) -> dict[str, Any]:
+        op = _validate_runtime_shape(self)
+        record: dict[str, Any] = {"id": self.id, "op": op}
+        if op in _CLIFFORD_OPS:
+            record["qubits"] = list(self.qubits)
+        elif op == "t_pauli":
+            record["terms"] = [list(pair) for pair in self.term.pairs]
+            record["sign"] = self.term.sign
+            record["angle_num"] = self.angle_num
+            record["angle_den"] = self.angle_den
+        elif op == "m_pauli":
+            record["terms"] = [list(pair) for pair in self.term.pairs]
+            record["sign"] = self.term.sign
+            record["result"] = self.result
+        elif op == "xor":
+            record["target"] = self.target
+            record["terms"] = list(self.terms)
+            record["const"] = self.const
+        else:
+            raise ValueError(f"unsupported k-PBC operation {op!r}")
+        if self.source_id is not None:
+            record["source_id"] = self.source_id
+        return record
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> KPBCOp:
+        op = _required_str(record, "op")
+        _reject_unknown_fields(record, op)
+        id = _required_int(record, "id")
+        source_id = _optional_str(record, "source_id")
+        if op in _CLIFFORD_OPS:
+            return cls.clifford(
+                id, op, _required_str_list(record, "qubits"), source_id=source_id
+            )
+        if op == "t_pauli":
+            return cls(
+                id=id,
+                op=op,
+                term=_pauli_term_from_record(record),
+                angle_num=_required_int(record, "angle_num"),
+                angle_den=_required_int(record, "angle_den"),
+                source_id=source_id,
+            )
+        if op == "m_pauli":
+            return cls.m_pauli(
+                id,
+                _pauli_term_from_record(record),
+                result=_required_str(record, "result"),
+                source_id=source_id,
+            )
+        if op == "xor":
+            return cls.xor(
+                id,
+                target=_required_str(record, "target"),
+                terms=_required_str_list(record, "terms"),
+                const=_required_int(record, "const"),
+                source_id=source_id,
+            )
+        raise ValueError(f"unsupported k-PBC operation {op!r}")
+
+    def validate(self, header: KPBCHeader) -> None:
+        op = _validate_runtime_shape(self)
+        if op in {"h", "s", "sdg"}:
+            _validate_data_qubit(self.qubits[0], header)
+            return
+        if op == "cx":
+            for qubit in self.qubits:
+                _validate_data_qubit(qubit, header)
+            return
+        if op == "t_pauli":
+            _validate_pauli_term(self.term, header, "t_pauli")
+            return
+        if op == "m_pauli":
+            _validate_pauli_term(self.term, header, "m_pauli")
+            return
+        if op == "xor":
+            return
+        raise ValueError(f"unsupported k-PBC operation {op!r}")
+
+
+def write_kpbc_jsonl(
+    path: str | Path, header: KPBCHeader, ops: Iterable[KPBCOp]
+) -> None:
+    output_path = Path(path)
+    temp_path: Path | None = None
+    last_id: int | None = None
+    state = _ProgramValidationState()
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as output:
+            temp_path = Path(output.name)
+            output.write(_json_line(header.to_record()))
+            for op in ops:
+                op.validate(header)
+                if last_id is not None and op.id <= last_id:
+                    raise ValueError(
+                        "operation ids must be strictly monotonically increasing"
+                    )
+                last_id = op.id
+                _validate_program_op(op, state)
+                output.write(_json_line(op.to_record()))
+        temp_path.replace(output_path)
+    except BaseException:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
+def read_kpbc_jsonl(path: str | Path) -> tuple[KPBCHeader, tuple[KPBCOp, ...]]:
+    input_path = Path(path)
+    header: KPBCHeader | None = None
+    ops: list[KPBCOp] = []
+    last_id: int | None = None
+    state = _ProgramValidationState()
+    with input_path.open() as input_file:
+        for line_number, line in enumerate(input_file, start=1):
+            record = _json_record_from_line(line, line_number)
+            if header is None:
+                header = _with_line_context(line_number, KPBCHeader.from_record, record)
+                continue
+            op = _with_line_context(line_number, KPBCOp.from_record, record)
+            _with_line_context(line_number, op.validate, header)
+            if last_id is not None and op.id <= last_id:
+                raise ValueError(
+                    f"line {line_number}: operation ids must be strictly "
+                    "monotonically increasing"
+                )
+            last_id = op.id
+            _with_line_context(line_number, _validate_program_op, op, state)
+            ops.append(op)
+    if header is None:
+        raise ValueError("k-PBC JSONL file is empty")
+    return header, tuple(ops)
+
+
+def validate_kpbc_program(header: KPBCHeader, ops: Iterable[KPBCOp]) -> None:
+    state = _ProgramValidationState()
+    last_id: int | None = None
+    for op in ops:
+        op.validate(header)
+        if last_id is not None and op.id <= last_id:
+            raise ValueError("operation ids must be strictly monotonically increasing")
+        last_id = op.id
+        _validate_program_op(op, state)
+
+
+def _json_record_from_line(line: str, line_number: int) -> dict[str, Any]:
+    if not line.strip():
+        raise ValueError(f"line {line_number}: blank JSONL line")
+    return _with_line_context(line_number, _json_record, line, line_number)
+
+
+def _with_line_context(line_number: int, func, *args):
+    try:
+        return func(*args)
+    except ValueError as exc:
+        message = str(exc)
+        prefix = f"line {line_number}:"
+        if message.startswith(prefix):
+            raise
+        raise ValueError(f"{prefix} {message}") from exc
+
+
+def _json_record(line: str, line_number: int) -> dict[str, Any]:
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON on line {line_number}") from exc
+    if not isinstance(record, dict):
+        raise ValueError(f"expected JSON object on line {line_number}")
+    return record
+
+
+def _json_line(record: dict[str, Any]) -> str:
+    return json.dumps(record, separators=(",", ":")) + "\n"
+
+
+@dataclass
+class _ProgramValidationState:
+    defined_physical: set[str] | None = None
+    defined_source: set[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.defined_physical is None:
+            self.defined_physical = set()
+        if self.defined_source is None:
+            self.defined_source = set()
+
+
+def _validate_program_op(op: KPBCOp, state: _ProgramValidationState) -> None:
+    if op.op == "m_pauli":
+        expected = f"c{len(state.defined_physical)}"
+        if op.result != expected:
+            raise ValueError(
+                f"classical bits must be created in order; expected {expected}, "
+                f"got {op.result}"
+            )
+        if op.result in state.defined_physical:
+            raise ValueError(f"classical bit {op.result} is already defined")
+        state.defined_physical.add(op.result)
+        return
+
+    if op.op == "xor":
+        if op.target in state.defined_source:
+            raise ValueError(f"source result {op.target} is already defined")
+        for term in op.terms:
+            if (
+                _PHYSICAL_CLASSICAL_RE.fullmatch(term)
+                and term not in state.defined_physical
+            ):
+                raise ValueError(f"classical input {term} is not defined")
+            if (
+                _SOURCE_CLASSICAL_RE.fullmatch(term)
+                and term not in state.defined_source
+            ):
+                raise ValueError(f"source input {term} is not defined")
+        state.defined_source.add(op.target)
+
+
+def _reject_unknown_fields(
+    record: dict[str, Any], schema: str, allowed: set[str] | None = None
+) -> None:
+    if allowed is None:
+        allowed = _OP_FIELDS.get(schema)
+    if allowed is None:
+        return
+    unknown = sorted(set(record) - allowed)
+    if unknown:
+        raise ValueError(f"unknown field(s) for {schema}: {', '.join(unknown)}")
+
+
+def _reject_irrelevant_runtime_fields(op: KPBCOp, op_name: str) -> None:
+    allowed = _OP_RUNTIME_FIELDS.get(op_name)
+    if allowed is None:
+        return
+    for field, default in _RUNTIME_FIELD_DEFAULTS.items():
+        if field in allowed:
+            continue
+        value = getattr(op, field)
+        if not _is_runtime_default(value, default):
+            raise ValueError(f"{field} is not valid for {op_name} operation")
+
+
+def _validate_runtime_shape(op: KPBCOp) -> str:
+    _validate_op_id(op.id)
+    _validate_optional_schema_str(op.source_id, "source_id")
+    op_name = _validate_schema_str(op.op, "op")
+    _reject_irrelevant_runtime_fields(op, op_name)
+    if op_name in {"h", "s", "sdg"}:
+        qubits = _validate_schema_str_sequence(op.qubits, "qubits", "qubit")
+        if len(qubits) != 1:
+            raise ValueError(f"{op_name} requires exactly one qubit")
+        _validate_data_qubit_id_shape(qubits[0])
+        return op_name
+    if op_name == "cx":
+        qubits = _validate_schema_str_sequence(op.qubits, "qubits", "qubit")
+        if len(qubits) != 2:
+            raise ValueError("cx requires exactly two qubits")
+        for qubit in qubits:
+            _validate_data_qubit_id_shape(qubit)
+        if qubits[0] == qubits[1]:
+            raise ValueError("cx requires two distinct qubits")
+        return op_name
+    if op_name == "t_pauli":
+        angle_num = _validate_schema_int(op.angle_num, "angle_num")
+        angle_den = _validate_schema_int(op.angle_den, "angle_den")
+        if angle_num != 1 or angle_den != 8:
+            raise ValueError("t_pauli requires angle_num=1 and angle_den=8")
+        _validate_pauli_term_shape(op.term, "t_pauli")
+        return op_name
+    if op_name == "m_pauli":
+        if op.result is None:
+            raise ValueError("m_pauli requires result")
+        _validate_physical_classical_id(op.result, "result")
+        _validate_pauli_term_shape(op.term, "m_pauli")
+        return op_name
+    if op_name == "xor":
+        if op.target is None:
+            raise ValueError("xor requires target")
+        _validate_source_classical_id(op.target, "target")
+        terms = _validate_schema_str_sequence(op.terms, "terms", "xor term")
+        for term in terms:
+            _validate_classical_input_id(term, "xor term")
+        if len(set(terms)) != len(terms):
+            raise ValueError("xor terms must not contain duplicate classical ids")
+        const = _validate_schema_int(op.const, "xor const")
+        if const not in {0, 1}:
+            raise ValueError("xor const must be 0 or 1")
+        return op_name
+    raise ValueError(f"unsupported k-PBC operation {op_name!r}")
+
+
+def _is_runtime_default(value: object, default: object) -> bool:
+    return type(value) is type(default) and value == default
+
+
+def _required_int(record: dict[str, Any], key: str) -> int:
+    value = record.get(key)
+    return _validate_schema_int(value, key)
+
+
+def _validate_schema_int(value: object, field: str) -> int:
+    if type(value) is not int:
+        raise ValueError(f"{field} must be an integer")
+    return value
+
+
+def _required_str(record: dict[str, Any], key: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    return value
+
+
+def _optional_str(record: dict[str, Any], key: str) -> str | None:
+    value = record.get(key)
+    return _validate_optional_schema_str(value, key)
+
+
+def _validate_optional_schema_str(value: object, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    return value
+
+
+def _validate_schema_str(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    return value
+
+
+def _validate_schema_str_sequence(
+    value: object, field: str, item_name: str
+) -> tuple[str, ...]:
+    if not _is_schema_str_sequence(value):
+        raise ValueError(f"{field} must be a list or tuple of {item_name} strings")
+    return tuple(value)
+
+
+def _is_schema_str_sequence(value: object) -> bool:
+    return isinstance(value, (list, tuple)) and all(
+        isinstance(item, str) for item in value
+    )
+
+
+def _required_str_list(record: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = record.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{key} must be a list of strings")
+    return tuple(value)
+
+
+def _pauli_term_from_record(record: dict[str, Any]) -> PauliTerm:
+    raw_pairs = record.get("terms")
+    if not isinstance(raw_pairs, list):
+        raise ValueError("terms must be a list of Pauli pairs")
+    pairs: list[tuple[str, str]] = []
+    for pair in raw_pairs:
+        if (
+            not isinstance(pair, list)
+            or len(pair) != 2
+            or not isinstance(pair[0], str)
+            or not isinstance(pair[1], str)
+        ):
+            raise ValueError("terms must contain [qubit, pauli] pairs")
+        pairs.append((pair[0], pair[1]))
+    return PauliTerm.from_pairs(pairs, sign=_required_int(record, "sign"))
+
+
+def _validate_op_id(op_id: int) -> None:
+    if type(op_id) is not int or op_id < 0:
+        raise ValueError("operation id must be a non-negative integer")
+
+
+def _validate_data_qubit_id_shape(qubit: object) -> str:
+    qubit = _validate_schema_str(qubit, "qubit")
+    if _DATA_QUBIT_RE.fullmatch(qubit) is None:
+        raise ValueError(f"expected data qubit id q<N>, got {qubit!r}")
+    return qubit
+
+
+def _validate_data_qubit(qubit: object, header: KPBCHeader) -> None:
+    qubit = _validate_data_qubit_id_shape(qubit)
+    match = _DATA_QUBIT_RE.fullmatch(qubit)
+    if match is None:
+        raise ValueError(f"expected data qubit id q<N>, got {qubit!r}")
+    idx = int(match.group(1))
+    if idx >= header.data_qubits:
+        raise ValueError(
+            f"data qubit {qubit} outside header width {header.data_qubits}"
+        )
+
+
+def _validate_physical_classical_id(classical_id: object, field: str) -> None:
+    classical_id = _validate_schema_str(classical_id, field)
+    if _PHYSICAL_CLASSICAL_RE.fullmatch(classical_id) is None:
+        raise ValueError(f"{field} must be a physical classical id c<N>")
+
+
+def _validate_source_classical_id(classical_id: object, field: str) -> None:
+    classical_id = _validate_schema_str(classical_id, field)
+    if _SOURCE_CLASSICAL_RE.fullmatch(classical_id) is None:
+        raise ValueError(f"{field} must be a source classical id src<N>")
+
+
+def _validate_classical_input_id(classical_id: object, field: str) -> None:
+    classical_id = _validate_schema_str(classical_id, field)
+    if (
+        _PHYSICAL_CLASSICAL_RE.fullmatch(classical_id) is None
+        and _SOURCE_CLASSICAL_RE.fullmatch(classical_id) is None
+    ):
+        raise ValueError(f"{field} must be a classical id c<N> or src<N>")
+
+
+def _validate_pauli_term(
+    term: PauliTerm | None, header: KPBCHeader, op_name: str
+) -> None:
+    pairs = _validate_pauli_term_shape(term, op_name)
+    weight = len(pairs)
+    if weight > header.k:
+        raise ValueError(f"{op_name} Pauli term weight {weight} exceeds k={header.k}")
+    for qubit, _pauli in pairs:
+        _validate_data_qubit(qubit, header)
+
+
+def _validate_pauli_term_shape(
+    term: PauliTerm | None, op_name: str
+) -> tuple[tuple[str, str], ...]:
+    if term is None:
+        raise ValueError(f"{op_name} requires term")
+    if not isinstance(term, PauliTerm):
+        raise ValueError(f"{op_name} requires PauliTerm")
+    sign = _validate_schema_int(term.sign, f"{op_name} sign")
+    if sign not in {1, -1}:
+        raise ValueError(f"{op_name} sign must be 1 or -1")
+
+    pairs = term.pairs
+    if not isinstance(pairs, (list, tuple)):
+        raise ValueError(f"{op_name} terms must be a list or tuple of Pauli pairs")
+
+    weight = len(pairs)
+    if weight < 1:
+        raise ValueError(f"{op_name} Pauli term weight must be at least 1")
+
+    seen_qubits: set[str] = set()
+    for pair in pairs:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError(f"{op_name} terms must contain 2-item Pauli pairs")
+        qubit, pauli = pair
+        qubit = _validate_data_qubit_id_shape(qubit)
+        if qubit in seen_qubits:
+            raise ValueError(f"{op_name} duplicate Pauli entry for qubit {qubit!r}")
+        seen_qubits.add(qubit)
+        pauli = _validate_schema_str(pauli, f"{op_name} Pauli label")
+        if pauli not in {"X", "Y", "Z"}:
+            raise ValueError(f"{op_name} Pauli label must be X, Y, or Z")
+    return tuple(pairs)
