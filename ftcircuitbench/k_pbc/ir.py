@@ -18,6 +18,7 @@ _PHYSICAL_CLASSICAL_RE = re.compile(rf"c({_INDEXED_SUFFIX})\Z")
 _SOURCE_CLASSICAL_RE = re.compile(rf"src({_INDEXED_SUFFIX})\Z")
 _SINGLE_QUBIT_CLIFFORD_OPS = {"i", "x", "y", "z", "h", "s", "sdg"}
 _CLIFFORD_OPS = {*_SINGLE_QUBIT_CLIFFORD_OPS, "cx"}
+CLIFFORD_OPS = frozenset(_CLIFFORD_OPS)
 _HEADER_FIELDS = {"format", "version", "k", "data_qubits"}
 _OP_FIELDS = {
     "i": {"id", "op", "qubits", "source_id"},

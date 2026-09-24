@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ftcircuitbench.k_pbc.ir import KPBCHeader, KPBCOp
+from ftcircuitbench.k_pbc.ir import CLIFFORD_OPS, KPBCHeader, KPBCOp
 from ftcircuitbench.semi_pbc.pipeline import CompileResult
 
 
@@ -12,7 +12,7 @@ def semi_pbc_result_to_kpbc(
     for op in result.ops:
         if op.op in {"alloc", "release"}:
             continue
-        if op.op in {"h", "s", "sdg", "cx"}:
+        if op.op in CLIFFORD_OPS:
             ops.append(KPBCOp.clifford(op.id, op.op, op.qubits, source_id=op.source_id))
         elif op.op == "t_pauli":
             ops.append(KPBCOp.t_pauli(op.id, op.term, source_id=op.source_id))

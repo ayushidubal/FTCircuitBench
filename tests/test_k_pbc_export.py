@@ -14,3 +14,25 @@ def test_naive_export_reuses_existing_capped_pipeline():
     assert ops[4].target == "src1"
     assert ops[4].terms == ("c0",)
     assert all(op.term is None or op.term.weight <= 1 for op in ops)
+
+
+def test_naive_export_accepts_expanded_kpbc_cliffords():
+    class Header:
+        k = 1
+        data_qubits = 1
+
+    class SourceOp:
+        def __init__(self, id, op):
+            self.id = id
+            self.op = op
+            self.qubits = ("q0",)
+            self.source_id = None
+
+    class Result:
+        header = Header()
+        ops = tuple(SourceOp(id, op) for id, op in enumerate(("i", "x", "y", "z")))
+
+    header, ops = semi_pbc_result_to_kpbc(Result())
+
+    assert header == KPBCHeader(k=1, data_qubits=1)
+    assert [op.op for op in ops] == ["i", "x", "y", "z"]

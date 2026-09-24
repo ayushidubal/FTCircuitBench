@@ -1,7 +1,7 @@
 # Decoder-Aware k-PBC Workflow Design
 
 **Date:** 2026-09-23
-**Status:** Approved for implementation planning
+**Status:** Approved for implementation planning; amended 2026-09-24 for native Pauli Clifford gates
 **Scope:** Direct C+T to k-PBC candidate generation, compulsory routing, and decoder-aware tracegen evaluation. This spec defines the workflow and terminology before implementation.
 
 ## 1. Goal
@@ -82,6 +82,10 @@ The routed candidate gate set is:
 
 ```text
 H
+I
+X
+Y
+Z
 S
 Sdg
 CNOT
@@ -89,7 +93,9 @@ k-T_Pauli
 k-M_Pauli
 ```
 
-Do not add more primitive Clifford gates unless the router requires them. `H`, `S`, `Sdg`, and `CNOT` are sufficient for the intended Clifford structure. Other Clifford operations such as `X`, `Z`, `CZ`, and `SWAP` should be macros or router-internal operations unless a downstream interface requires them explicitly.
+`I`, `X`, `Y`, and `Z` are native single-qubit Clifford operations in the candidate format because the FTCircuitBench C+T inputs contain Pauli Cliffords. The direct C+T path should parse identity gates and drop them as no-ops. It should preserve `X`, `Y`, and `Z` as native gates when they cannot be absorbed into a pending Pauli frame update.
+
+Do not add more primitive Clifford gates unless the router requires them. `CZ` and `SWAP` should remain macros or router-internal operations unless a downstream interface requires them explicitly.
 
 The candidate format must preserve classical dependencies and measurement-result postprocessing, even though those are not routed quantum operations.
 
@@ -176,6 +182,10 @@ For each emitted candidate:
 
 ```text
 route every operation:
+    I
+    X
+    Y
+    Z
     H
     S
     Sdg
@@ -318,7 +328,7 @@ Known local tool roots at the time of this spec include:
 - `tracegen` for routed trace extraction and decoder-aware timing;
 - `FastLS` for lattice-surgery simulation or cost tooling;
 - `FastMQLSS` for measurement/lattice-surgery related tooling;
-- `fastkPBC`, to be built as the router for the `H/S/Sdg/CNOT/k-T_Pauli/k-M_Pauli` gateset.
+- `fastkPBC`, to be built as the router for the `I/X/Y/Z/H/S/Sdg/CNOT/k-T_Pauli/k-M_Pauli` gateset.
 
 Code should be written and tested on this machine, but the final 95-circuit execution at each major stage will run on the server. Server results will be handed back into this workflow step by step, so local code and server artifacts must stay easy to match.
 
