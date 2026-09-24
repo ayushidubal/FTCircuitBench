@@ -3,16 +3,19 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
 
 _QREG_RE = re.compile(r"\bqreg\s+\w+\[(\d+)\]\s*;")
+_SIZE_RE = re.compile(r"(.+?_(?:0|[1-9][0-9]*)q)(?:_|$)")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare a server k-PBC run manifest.")
-    parser.add_argument("--circuits-dir", required=True, type=Path)
+    parser.add_argument("--pbc-dir", required=True, type=Path)
+    parser.add_argument("--ct-dir", type=Path)
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--compiler-modes", nargs="+", required=True)
     parser.add_argument("--k-values", required=True)
@@ -39,25 +42,35 @@ def _build_manifest_rows(
     decoder_paths: dict[str, Path],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    circuits = sorted(args.circuits_dir.rglob("*.qasm"))
-    for circuit in circuits:
-        n = _qasm_qubit_count(circuit)
+    selected = _smallest_pbc_per_family(args.pbc_dir)
+    for family, pbc_path, n in selected:
         for decoder in decoders:
             decoder_name = decoder["name"]
             for compiler_mode in args.compiler_modes:
+                input_path, input_kind = _input_for_mode(
+                    compiler_mode=compiler_mode,
+                    pbc_path=pbc_path,
+                    ct_dir=args.ct_dir,
+                    family=family,
+                    n=n,
+                )
                 for k in _expand_k_values(args.k_values, n):
                     run_dir = (
                         args.out_dir
                         / "runs"
-                        / circuit.stem
+                        / family
+                        / pbc_path.stem
                         / decoder_name
                         / compiler_mode
                         / f"k_{k}"
                     )
                     rows.append(
                         {
-                            "circuit": str(circuit),
-                            "circuit_name": circuit.stem,
+                            "family": family,
+                            "input": str(input_path),
+                            "input_kind": input_kind,
+                            "pbc": str(pbc_path),
+                            "circuit_name": pbc_path.stem,
                             "n": n,
                             "decoder": decoder_name,
                             "decoder_model": str(decoder_paths[decoder_name]),
@@ -66,7 +79,8 @@ def _build_manifest_rows(
                             "d": args.d,
                             "run_dir": str(run_dir),
                             "command": _run_command(
-                                circuit=circuit,
+                                input_path=input_path,
+                                input_kind=input_kind,
                                 run_dir=run_dir,
                                 compiler_mode=compiler_mode,
                                 decoder_model=decoder_paths[decoder_name],
@@ -80,23 +94,80 @@ def _build_manifest_rows(
 
 def _run_command(
     *,
-    circuit: Path,
+    input_path: Path,
+    input_kind: str,
     run_dir: Path,
     compiler_mode: str,
     decoder_model: Path,
     k: int,
     d: int,
 ) -> str:
+    input_flag = "--qasm" if input_kind == "qasm" else "--pbc"
     return (
         "python3 scripts/run_kpbc_smoke.py "
-        f"--qasm {circuit} "
-        f"--out-dir {run_dir} "
+        f"{input_flag} {shlex.quote(str(input_path))} "
+        f"--out-dir {shlex.quote(str(run_dir))} "
         f"--k {k} "
         f"--compiler-mode {compiler_mode} "
-        '${ROUTER_BIN:+--router-bin "$ROUTER_BIN"} '
-        f"--decoder-model {decoder_model} "
+        '--router-bin "$ROUTER_BIN" '
+        '${TRACEGEN_REPO:+--tracegen-repo "$TRACEGEN_REPO"} '
+        f"--decoder-model {shlex.quote(str(decoder_model))} "
         f"--d {d}"
     )
+
+
+def _smallest_pbc_per_family(pbc_dir: Path) -> list[tuple[str, Path, int]]:
+    best: dict[str, tuple[Path, int]] = {}
+    for path in sorted(pbc_dir.rglob("*_pbc_post_opt.txt")):
+        try:
+            family = path.relative_to(pbc_dir).parts[0]
+        except (IndexError, ValueError):
+            continue
+        n = _qreg_qubit_count(path)
+        current = best.get(family)
+        if current is None or (n, str(path)) < (current[1], str(current[0])):
+            best[family] = (path, n)
+    return [(family, path, n) for family, (path, n) in sorted(best.items())]
+
+
+def _input_for_mode(
+    *,
+    compiler_mode: str,
+    pbc_path: Path,
+    ct_dir: Path | None,
+    family: str,
+    n: int,
+) -> tuple[Path, str]:
+    if compiler_mode == "pbc-naive-ladder":
+        return pbc_path, "pbc"
+    if compiler_mode == "ct-segmented-litinski":
+        if ct_dir is None:
+            raise ValueError("ct-segmented-litinski requires --ct-dir")
+        return _find_ct_qasm(ct_dir=ct_dir, family=family, pbc_path=pbc_path, n=n), "qasm"
+    raise ValueError(f"unsupported compiler mode {compiler_mode!r}")
+
+
+def _find_ct_qasm(*, ct_dir: Path, family: str, pbc_path: Path, n: int) -> Path:
+    wanted_stem = _ct_stem_from_pbc_stem(pbc_path.stem)
+    candidates = sorted((ct_dir / family).rglob("*.qasm"))
+    if not candidates:
+        candidates = sorted(ct_dir.rglob("*.qasm"))
+    for candidate in candidates:
+        if candidate.stem == wanted_stem:
+            return candidate
+    same_width = [candidate for candidate in candidates if _qreg_qubit_count(candidate) == n]
+    if len(same_width) == 1:
+        return same_width[0]
+    if not same_width:
+        raise ValueError(f"could not find C+T QASM for {pbc_path}")
+    raise ValueError(f"multiple C+T QASM candidates match {pbc_path}")
+
+
+def _ct_stem_from_pbc_stem(stem: str) -> str:
+    match = _SIZE_RE.match(stem)
+    if match is None:
+        return stem
+    return match.group(1)
 
 
 def _load_decoders(path: Path) -> list[dict[str, Any]]:
@@ -136,7 +207,8 @@ def _write_server_script(path: Path, rows: list[dict[str, Any]]) -> None:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         'JOBS="${JOBS:-8}"\n'
-        f'xargs -P "$JOBS" -I {{}} bash -lc {{}} < "{commands_path}"\n'
+        ': "${ROUTER_BIN:?set ROUTER_BIN to fastkpbc binary}"\n'
+        f'cat "{commands_path}" | xargs -P "$JOBS" -I {{}} bash -lc {{}}\n'
     )
     path.chmod(0o755)
 
@@ -167,6 +239,10 @@ def _expand_k_values(spec: str, n: int) -> list[int]:
 
 
 def _qasm_qubit_count(path: Path) -> int:
+    return _qreg_qubit_count(path)
+
+
+def _qreg_qubit_count(path: Path) -> int:
     match = _QREG_RE.search(path.read_text(encoding="utf-8"))
     if match is None:
         raise ValueError(f"could not find qreg in {path}")

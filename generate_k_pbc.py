@@ -11,28 +11,30 @@ os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "matplot
 
 from qiskit import QuantumCircuit
 
+from ftcircuitbench.k_pbc.export import semi_pbc_result_to_kpbc
 from ftcircuitbench.k_pbc.ir import KPBCHeader, KPBCOp, write_kpbc_jsonl
 from ftcircuitbench.k_pbc.segmented_litinski import compile_clifford_t_to_kpbc
+from ftcircuitbench.semi_pbc.pipeline import compile_pbc_file
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate k-PBC candidate JSONL from Clifford+T QASM."
+        description="Generate k-PBC candidate JSONL from PBC text or Clifford+T QASM."
     )
-    parser.add_argument("--qasm", required=True, type=Path)
+    parser.add_argument("--qasm", type=Path)
+    parser.add_argument("--pbc", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--k", required=True, type=_positive_int)
-    parser.add_argument("--mode", required=True, choices=("naive", "segmented-litinski"))
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=("pbc-naive-ladder", "ct-segmented-litinski"),
+    )
     parser.add_argument("--summary", type=Path)
     args = parser.parse_args()
 
     try:
-        if args.mode == "naive":
-            raise ValueError(
-                "naive mode currently requires an existing semi-PBC/PBC input path; "
-                "use --mode segmented-litinski for Clifford+T QASM"
-            )
-        header, ops = _compile_segmented_litinski(args.qasm, k=args.k)
+        header, ops = _compile_candidate(args)
         write_kpbc_jsonl(args.out, header, ops)
         summary = _summary(args.mode, header, ops)
         if args.summary is not None:
@@ -47,11 +49,36 @@ def main() -> int:
     return 0
 
 
+def _compile_candidate(args: argparse.Namespace) -> tuple[KPBCHeader, tuple[KPBCOp, ...]]:
+    if args.mode == "ct-segmented-litinski":
+        if args.qasm is None or args.pbc is not None:
+            raise ValueError("ct-segmented-litinski requires --qasm and no --pbc")
+        return _compile_segmented_litinski(args.qasm, k=args.k)
+    if args.mode == "pbc-naive-ladder":
+        if args.pbc is None or args.qasm is not None:
+            raise ValueError("pbc-naive-ladder requires --pbc and no --qasm")
+        return _compile_pbc_naive_ladder(args.pbc, k=args.k)
+    raise ValueError(f"unsupported mode {args.mode!r}")
+
+
 def _compile_segmented_litinski(
     qasm_path: Path, *, k: int
 ) -> tuple[KPBCHeader, tuple[KPBCOp, ...]]:
     circuit = QuantumCircuit.from_qasm_file(str(qasm_path))
     return compile_clifford_t_to_kpbc(circuit, k=k)
+
+
+def _compile_pbc_naive_ladder(
+    pbc_path: Path, *, k: int
+) -> tuple[KPBCHeader, tuple[KPBCOp, ...]]:
+    result = compile_pbc_file(
+        pbc_path,
+        k=k,
+        measurement_reducer="none",
+        optimization="none",
+        emit_sidecar=False,
+    )
+    return semi_pbc_result_to_kpbc(result)
 
 
 def _summary(mode: str, header: KPBCHeader, ops: tuple[KPBCOp, ...]) -> dict[str, object]:

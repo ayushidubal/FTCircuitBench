@@ -23,15 +23,18 @@ DEFAULT_DECODER_MODEL = {
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a local k-PBC smoke workflow.")
-    parser.add_argument("--qasm", required=True, type=Path)
+    parser.add_argument("--qasm", type=Path)
+    parser.add_argument("--pbc", type=Path)
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--k", required=True, type=_positive_int)
     parser.add_argument(
-        "--compiler-mode", required=True, choices=("segmented-litinski", "naive")
+        "--compiler-mode",
+        required=True,
+        choices=("ct-segmented-litinski", "pbc-naive-ladder"),
     )
     parser.add_argument("--router-bin", required=True, type=Path)
     parser.add_argument("--router-arg", action="append", default=[])
-    parser.add_argument("--tracegen-python", type=Path)
+    parser.add_argument("--tracegen-repo", type=Path)
     parser.add_argument("--decoder-model", type=Path)
     parser.add_argument("--d", required=True, type=_positive_int)
     args = parser.parse_args()
@@ -45,6 +48,7 @@ def main() -> int:
 
     log_lines: list[str] = []
     try:
+        _validate_input_args(args)
         _generate_candidate(args, candidate_path, log_lines)
         _run_router(args, candidate_path, routed_path, log_lines)
         routed_ops = json.loads(routed_path.read_text(encoding="utf-8"))
@@ -52,6 +56,8 @@ def main() -> int:
             routed_ops,
             decoder_config=_load_decoder_config(args.decoder_model),
             d=args.d,
+            tracegen_repo=args.tracegen_repo,
+            log_lines=log_lines,
         )
         _write_trace_jsonl(trace_path, events, summary)
         _write_json(summary_path, summary)
@@ -67,11 +73,21 @@ def main() -> int:
     return 0
 
 
+def _validate_input_args(args: argparse.Namespace) -> None:
+    if args.compiler_mode == "ct-segmented-litinski":
+        if args.qasm is None or args.pbc is not None:
+            raise ValueError("ct-segmented-litinski requires --qasm and no --pbc")
+        return
+    if args.compiler_mode == "pbc-naive-ladder":
+        if args.pbc is None or args.qasm is not None:
+            raise ValueError("pbc-naive-ladder requires --pbc and no --qasm")
+        return
+    raise ValueError(f"unsupported compiler mode {args.compiler_mode!r}")
+
+
 def _generate_candidate(args: argparse.Namespace, out_path: Path, log_lines: list[str]) -> None:
     argv = [
         "generate_k_pbc.py",
-        "--qasm",
-        str(args.qasm),
         "--out",
         str(out_path),
         "--k",
@@ -79,6 +95,10 @@ def _generate_candidate(args: argparse.Namespace, out_path: Path, log_lines: lis
         "--mode",
         args.compiler_mode,
     ]
+    if args.compiler_mode == "ct-segmented-litinski":
+        argv.extend(("--qasm", str(args.qasm)))
+    elif args.compiler_mode == "pbc-naive-ladder":
+        argv.extend(("--pbc", str(args.pbc)))
     old_argv = sys.argv
     try:
         sys.argv = argv
@@ -105,12 +125,26 @@ def _run_router(
 
 
 def _time_routed_ops(
-    routed_ops: list[dict[str, Any]], *, decoder_config: dict[str, Any], d: int
+    routed_ops: list[dict[str, Any]],
+    *,
+    decoder_config: dict[str, Any],
+    d: int,
+    tracegen_repo: Path | None,
+    log_lines: list[str],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     try:
-        tracegen_root = Path("/Users/ayushidubal/qmem/.worktrees/tracegen")
-        if tracegen_root.exists():
-            sys.path.insert(0, str(tracegen_root))
+        if tracegen_repo is None:
+            env_tracegen = None
+            try:
+                import os
+
+                env_tracegen = os.environ.get("TRACEGEN_REPO")
+            except OSError:
+                env_tracegen = None
+            tracegen_repo = Path(env_tracegen) if env_tracegen else None
+        if tracegen_repo is not None:
+            sys.path.insert(0, str(tracegen_repo))
+            log_lines.append(f"tracegen_repo={tracegen_repo}")
         from qmem_utils.decoder_model import PowerLawDecoderModel
         from qmem_utils.kpbc_tracegen import time_routed_kpbc_ops
 

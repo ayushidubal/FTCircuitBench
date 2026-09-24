@@ -39,9 +39,22 @@ def test_segmented_litinski_emits_boundary_clifford_when_growth_would_exceed_k()
     assert all(op.term is None or op.term.weight <= 1 for op in ops)
 
 
-def test_segmented_litinski_rejects_unsupported_gate():
+def test_segmented_litinski_decomposes_x_into_supported_cliffords():
     qc = QuantumCircuit(1)
     qc.x(0)
+    qc.t(0)
+
+    header, ops = compile_clifford_t_to_kpbc(qc, k=1)
+
+    assert header.data_qubits == 1
+    assert [op.op for op in ops] == ["t_pauli"]
+    assert ops[0].term.pairs == (("q0", "Z"),)
+    assert ops[0].term.sign == -1
+
+
+def test_segmented_litinski_rejects_unsupported_gate():
+    qc = QuantumCircuit(1)
+    qc.rx(0.5, 0)
 
     with pytest.raises(ValueError, match="unsupported"):
         compile_clifford_t_to_kpbc(qc, k=1)

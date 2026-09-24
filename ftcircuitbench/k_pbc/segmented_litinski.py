@@ -12,6 +12,11 @@ from ftcircuitbench.semi_pbc.pauli import PauliTerm
 _CLIFFORD_GATES = {"h", "s", "sdg", "cx"}
 _SKIPPED_GATES = {"barrier", "measure"}
 _T_GATES = {"t", "tdg"}
+_CLIFFORD_DECOMPOSITIONS = {
+    "x": (("h", 0), ("s", 0), ("s", 0), ("h", 0)),
+    "z": (("s", 0), ("s", 0)),
+    "y": (("h", 0), ("s", 0), ("s", 0), ("h", 0), ("s", 0), ("s", 0)),
+}
 
 
 def compile_clifford_t_to_kpbc(
@@ -22,8 +27,7 @@ def compile_clifford_t_to_kpbc(
     pending_rows: list[np.ndarray] = []
     reverse_items: list[tuple[str, Any, Any]] = []
 
-    for instruction in reversed(qc.data):
-        gate_name, qubits = _instruction_name_and_qubits(qc, instruction)
+    for gate_name, qubits in reversed(_expanded_instruction_names_and_qubits(qc)):
         if gate_name in _SKIPPED_GATES:
             continue
         if gate_name in _T_GATES:
@@ -127,6 +131,21 @@ def _instruction_name_and_qubits(
     if operation is None or qargs is None:
         operation, qargs, _clbits = instruction
     return operation.name, [qc.find_bit(qubit).index for qubit in qargs]
+
+
+def _expanded_instruction_names_and_qubits(qc: QuantumCircuit) -> list[tuple[str, list[int]]]:
+    expanded: list[tuple[str, list[int]]] = []
+    for instruction in qc.data:
+        gate_name, qubits = _instruction_name_and_qubits(qc, instruction)
+        decomposition = _CLIFFORD_DECOMPOSITIONS.get(gate_name)
+        if decomposition is None:
+            expanded.append((gate_name, qubits))
+            continue
+        if len(qubits) != 1:
+            raise ValueError(f"{gate_name} requires exactly one qubit")
+        for decomposed_gate, qubit_index in decomposition:
+            expanded.append((decomposed_gate, [qubits[qubit_index]]))
+    return expanded
 
 
 def _validate_clifford_shape(gate_name: str, qubits: list[int]) -> None:
