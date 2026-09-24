@@ -16,9 +16,14 @@ _INDEXED_SUFFIX = r"(?:0|[1-9][0-9]*)"
 _DATA_QUBIT_RE = re.compile(rf"q({_INDEXED_SUFFIX})\Z")
 _PHYSICAL_CLASSICAL_RE = re.compile(rf"c({_INDEXED_SUFFIX})\Z")
 _SOURCE_CLASSICAL_RE = re.compile(rf"src({_INDEXED_SUFFIX})\Z")
-_CLIFFORD_OPS = {"h", "s", "sdg", "cx"}
+_SINGLE_QUBIT_CLIFFORD_OPS = {"i", "x", "y", "z", "h", "s", "sdg"}
+_CLIFFORD_OPS = {*_SINGLE_QUBIT_CLIFFORD_OPS, "cx"}
 _HEADER_FIELDS = {"format", "version", "k", "data_qubits"}
 _OP_FIELDS = {
+    "i": {"id", "op", "qubits", "source_id"},
+    "x": {"id", "op", "qubits", "source_id"},
+    "y": {"id", "op", "qubits", "source_id"},
+    "z": {"id", "op", "qubits", "source_id"},
     "h": {"id", "op", "qubits", "source_id"},
     "s": {"id", "op", "qubits", "source_id"},
     "sdg": {"id", "op", "qubits", "source_id"},
@@ -36,6 +41,10 @@ _OP_FIELDS = {
     "xor": {"id", "op", "target", "terms", "const", "source_id"},
 }
 _OP_RUNTIME_FIELDS = {
+    "i": {"qubits"},
+    "x": {"qubits"},
+    "y": {"qubits"},
+    "z": {"qubits"},
     "h": {"qubits"},
     "s": {"qubits"},
     "sdg": {"qubits"},
@@ -235,7 +244,7 @@ class KPBCOp:
 
     def validate(self, header: KPBCHeader) -> None:
         op = _validate_runtime_shape(self)
-        if op in {"h", "s", "sdg"}:
+        if op in _SINGLE_QUBIT_CLIFFORD_OPS:
             _validate_data_qubit(self.qubits[0], header)
             return
         if op == "cx":
@@ -426,7 +435,7 @@ def _validate_runtime_shape(op: KPBCOp) -> str:
     _validate_optional_schema_str(op.source_id, "source_id")
     op_name = _validate_schema_str(op.op, "op")
     _reject_irrelevant_runtime_fields(op, op_name)
-    if op_name in {"h", "s", "sdg"}:
+    if op_name in _SINGLE_QUBIT_CLIFFORD_OPS:
         qubits = _validate_schema_str_sequence(op.qubits, "qubits", "qubit")
         if len(qubits) != 1:
             raise ValueError(f"{op_name} requires exactly one qubit")

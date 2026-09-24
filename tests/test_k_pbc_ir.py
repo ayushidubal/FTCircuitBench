@@ -15,12 +15,16 @@ def test_kpbc_round_trips_gate_set(tmp_path):
     path = tmp_path / "toy.kpbc.jsonl"
     header = KPBCHeader(k=2, data_qubits=3)
     ops = [
-        KPBCOp.clifford(0, "h", ("q0",)),
-        KPBCOp.clifford(1, "s", ("q1",)),
-        KPBCOp.clifford(2, "sdg", ("q1",)),
-        KPBCOp.clifford(3, "cx", ("q0", "q2")),
-        KPBCOp.t_pauli(4, PauliTerm.from_pairs([("q0", "Z"), ("q2", "X")])),
-        KPBCOp.m_pauli(5, PauliTerm.from_pairs([("q1", "Z")]), result="c0"),
+        KPBCOp.clifford(0, "i", ("q0",)),
+        KPBCOp.clifford(1, "x", ("q0",)),
+        KPBCOp.clifford(2, "y", ("q1",)),
+        KPBCOp.clifford(3, "z", ("q2",)),
+        KPBCOp.clifford(4, "h", ("q0",)),
+        KPBCOp.clifford(5, "s", ("q1",)),
+        KPBCOp.clifford(6, "sdg", ("q1",)),
+        KPBCOp.clifford(7, "cx", ("q0", "q2")),
+        KPBCOp.t_pauli(8, PauliTerm.from_pairs([("q0", "Z"), ("q2", "X")])),
+        KPBCOp.m_pauli(9, PauliTerm.from_pairs([("q1", "Z")]), result="c0"),
     ]
     write_kpbc_jsonl(path, header, ops)
     loaded_header, loaded_ops = read_kpbc_jsonl(path)

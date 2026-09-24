@@ -9,13 +9,16 @@ from ftcircuitbench.k_pbc.ir import KPBCHeader, KPBCOp
 from ftcircuitbench.pbc_converter.tab_gate import TableauPauliBasis
 from ftcircuitbench.semi_pbc.pauli import PauliTerm
 
-_CLIFFORD_GATES = {"h", "s", "sdg", "cx"}
+_SINGLE_QUBIT_CLIFFORD_GATES = {"x", "y", "z", "h", "s", "sdg"}
+_CLIFFORD_GATES = {*_SINGLE_QUBIT_CLIFFORD_GATES, "cx"}
+_IDENTITY_GATES = {"i", "id"}
 _SKIPPED_GATES = {"barrier", "measure"}
 _T_GATES = {"t", "tdg"}
-_CLIFFORD_DECOMPOSITIONS = {
+_TABLEAU_DECOMPOSITIONS = {
     "x": (("h", 0), ("s", 0), ("s", 0), ("h", 0)),
     "z": (("s", 0), ("s", 0)),
     "y": (("h", 0), ("s", 0), ("s", 0), ("h", 0), ("s", 0), ("s", 0)),
+    "sdg": (("s", 0), ("s", 0), ("s", 0)),
 }
 
 
@@ -27,8 +30,8 @@ def compile_clifford_t_to_kpbc(
     pending_rows: list[np.ndarray] = []
     reverse_items: list[tuple[str, Any, Any]] = []
 
-    for gate_name, qubits in reversed(_expanded_instruction_names_and_qubits(qc)):
-        if gate_name in _SKIPPED_GATES:
+    for gate_name, qubits in reversed(_instruction_names_and_qubits(qc)):
+        if gate_name in _SKIPPED_GATES or gate_name in _IDENTITY_GATES:
             continue
         if gate_name in _T_GATES:
             pending_rows.append(
@@ -39,6 +42,9 @@ def compile_clifford_t_to_kpbc(
             prospective = _prospective_rows_after_gate(
                 pending_rows, gate_name, qubits, qc.num_qubits
             )
+            if not pending_rows:
+                reverse_items.append(("clifford", gate_name, tuple(qubits)))
+                continue
             if all(_row_weight(row, qc.num_qubits) <= k for row in prospective):
                 pending_rows = prospective
                 continue
@@ -89,11 +95,12 @@ def _prospective_rows_after_gate(
     tableau = TableauPauliBasis(np.array(rows, dtype=bool, copy=True))
     if tableau.qubits != num_qubits:
         raise ValueError("pending rows do not match circuit width")
-    if gate_name == "sdg":
-        for _ in range(3):
-            tableau.apply_gate("s", qubits)
-    else:
+    decomposition = _TABLEAU_DECOMPOSITIONS.get(gate_name)
+    if decomposition is None:
         tableau.apply_gate(gate_name, qubits)
+    else:
+        for decomposed_gate, qubit_index in decomposition:
+            tableau.apply_gate(decomposed_gate, [qubits[qubit_index]])
     return [row.copy() for row in tableau.tableau]
 
 
@@ -133,23 +140,12 @@ def _instruction_name_and_qubits(
     return operation.name, [qc.find_bit(qubit).index for qubit in qargs]
 
 
-def _expanded_instruction_names_and_qubits(qc: QuantumCircuit) -> list[tuple[str, list[int]]]:
-    expanded: list[tuple[str, list[int]]] = []
-    for instruction in qc.data:
-        gate_name, qubits = _instruction_name_and_qubits(qc, instruction)
-        decomposition = _CLIFFORD_DECOMPOSITIONS.get(gate_name)
-        if decomposition is None:
-            expanded.append((gate_name, qubits))
-            continue
-        if len(qubits) != 1:
-            raise ValueError(f"{gate_name} requires exactly one qubit")
-        for decomposed_gate, qubit_index in decomposition:
-            expanded.append((decomposed_gate, [qubits[qubit_index]]))
-    return expanded
+def _instruction_names_and_qubits(qc: QuantumCircuit) -> list[tuple[str, list[int]]]:
+    return [_instruction_name_and_qubits(qc, instruction) for instruction in qc.data]
 
 
 def _validate_clifford_shape(gate_name: str, qubits: list[int]) -> None:
-    if gate_name in {"h", "s", "sdg"}:
+    if gate_name in _SINGLE_QUBIT_CLIFFORD_GATES:
         if len(qubits) != 1:
             raise ValueError(f"{gate_name} requires exactly one qubit")
         return

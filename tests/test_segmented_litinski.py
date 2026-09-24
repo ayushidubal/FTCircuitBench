@@ -39,7 +39,7 @@ def test_segmented_litinski_emits_boundary_clifford_when_growth_would_exceed_k()
     assert all(op.term is None or op.term.weight <= 1 for op in ops)
 
 
-def test_segmented_litinski_decomposes_x_into_supported_cliffords():
+def test_segmented_litinski_absorbs_x_into_pending_pauli_when_possible():
     qc = QuantumCircuit(1)
     qc.x(0)
     qc.t(0)
@@ -50,6 +50,29 @@ def test_segmented_litinski_decomposes_x_into_supported_cliffords():
     assert [op.op for op in ops] == ["t_pauli"]
     assert ops[0].term.pairs == (("q0", "Z"),)
     assert ops[0].term.sign == -1
+
+
+def test_segmented_litinski_emits_native_xyz_when_not_absorbed():
+    qc = QuantumCircuit(3)
+    qc.t(0)
+    qc.x(0)
+    qc.y(1)
+    qc.z(2)
+
+    _header, ops = compile_clifford_t_to_kpbc(qc, k=1)
+
+    assert [op.op for op in ops] == ["t_pauli", "x", "y", "z"]
+
+
+def test_segmented_litinski_drops_identity_gate():
+    qc = QuantumCircuit(1)
+    qc.id(0)
+    qc.t(0)
+    qc.id(0)
+
+    _header, ops = compile_clifford_t_to_kpbc(qc, k=1)
+
+    assert [op.op for op in ops] == ["t_pauli"]
 
 
 def test_segmented_litinski_rejects_unsupported_gate():
