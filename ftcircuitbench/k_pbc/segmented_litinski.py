@@ -14,11 +14,15 @@ _CLIFFORD_GATES = {*_SINGLE_QUBIT_CLIFFORD_GATES, "cx"}
 _IDENTITY_GATES = {"i", "id"}
 _SKIPPED_GATES = {"barrier", "measure"}
 _T_GATES = {"t", "tdg"}
+# Moving a later rotation P before Clifford C rewrites it as C^dag P C, but the tableau
+# applies C P C^dag. Each entry therefore lists tableau gates for C^dag: s and sdg swap,
+# and the remaining gates are self-inverse.
 _TABLEAU_DECOMPOSITIONS = {
     "x": (("h", 0), ("s", 0), ("s", 0), ("h", 0)),
     "z": (("s", 0), ("s", 0)),
     "y": (("h", 0), ("s", 0), ("s", 0), ("h", 0), ("s", 0), ("s", 0)),
-    "sdg": (("s", 0), ("s", 0), ("s", 0)),
+    "s": (("s", 0), ("s", 0), ("s", 0)),
+    "sdg": (("s", 0),),
 }
 
 
@@ -28,6 +32,9 @@ def compile_clifford_t_to_kpbc(
     """Compile a Clifford+T circuit into capped segmented k-PBC candidates."""
     header = KPBCHeader(k=k, data_qubits=qc.num_qubits)
     pending_rows: list[np.ndarray] = []
+    # Cliffords that pending rotations were moved before; they are emitted after
+    # those rotations, so the segment stays equivalent to the source circuit.
+    absorbed_cliffords: list[tuple[str, Any, Any]] = []
     reverse_items: list[tuple[str, Any, Any]] = []
 
     for gate_name, qubits in reversed(_instruction_names_and_qubits(qc)):
@@ -47,14 +54,16 @@ def compile_clifford_t_to_kpbc(
                 continue
             if all(_row_weight(row, qc.num_qubits) <= k for row in prospective):
                 pending_rows = prospective
+                absorbed_cliffords.append(("clifford", gate_name, tuple(qubits)))
                 continue
-            _append_pending(reverse_items, pending_rows)
+            _append_segment(reverse_items, pending_rows, absorbed_cliffords)
             reverse_items.append(("clifford", gate_name, tuple(qubits)))
             pending_rows = []
+            absorbed_cliffords = []
             continue
         raise ValueError(f"unsupported gate {gate_name!r}")
 
-    _append_pending(reverse_items, pending_rows)
+    _append_segment(reverse_items, pending_rows, absorbed_cliffords)
     ops = _items_to_ops(reversed(reverse_items), qc.num_qubits)
     header.validate_ops(ops)
     return header, ops
@@ -104,9 +113,14 @@ def _prospective_rows_after_gate(
     return [row.copy() for row in tableau.tableau]
 
 
-def _append_pending(
-    reverse_items: list[tuple[str, Any, Any]], pending_rows: list[np.ndarray]
+def _append_segment(
+    reverse_items: list[tuple[str, Any, Any]],
+    pending_rows: list[np.ndarray],
+    absorbed_cliffords: list[tuple[str, Any, Any]],
 ) -> None:
+    # reverse_items is in reverse time order: the absorbed Cliffords land after the
+    # segment's rotations once the list is reversed.
+    reverse_items.extend(absorbed_cliffords)
     for row in pending_rows:
         reverse_items.append(("t_pauli", row.copy(), None))
 
